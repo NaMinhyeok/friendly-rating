@@ -25,7 +25,7 @@ jobs:
 
     services:
       postgres:
-        image: postgres:17-alpine
+        image: postgres:18-alpine
         env:
           POSTGRES_DB: friendly_rating
           POSTGRES_USER: friendly_rating
@@ -33,7 +33,7 @@ jobs:
         ports:
           - 5432:5432
         options: >-
-          --health-cmd pg_isready
+          --health-cmd "pg_isready -U friendly_rating -d friendly_rating"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -69,6 +69,25 @@ jobs:
 
       - name: Run Django checks
         run: uv run --no-sync python manage.py check
+
+      - name: Run production deployment checks
+        env:
+          DEBUG: "0"
+          RAILWAY_ENVIRONMENT: ci
+          RAILWAY_PUBLIC_DOMAIN: ci.example.invalid
+          SECRET_KEY: ci-only-not-a-secret-000000000000000000000000000000000000000000000000000000
+          DJANGO_SETTINGS_MODULE: config.ci_production_settings
+        run: >-
+          uv run --no-sync python manage.py check
+          --deploy --fail-level WARNING
+
+      - name: Collect production static files
+        env:
+          DEBUG: "0"
+          RAILWAY_ENVIRONMENT: ci
+          RAILWAY_PUBLIC_DOMAIN: ci.example.invalid
+          SECRET_KEY: ci-only-not-a-secret-000000000000000000000000000000000000000000000000000000
+        run: uv run --no-sync python manage.py collectstatic --noinput
 
       - name: Check for missing migrations
         run: uv run --no-sync python manage.py makemigrations --check --dry-run
