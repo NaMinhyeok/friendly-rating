@@ -1,7 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from ratings.models import ScoreChange
+from ratings.models import Participant, ScoreChange
 from ratings.services import change_relationship_score
 
 from .factories import create_participant_pair
@@ -25,7 +25,7 @@ class ChangeRelationshipScoreTests(TestCase):
         self.assertEqual(change.resulting_score, 7)
         self.assertEqual(change.changed_by, self.first)
 
-    def test_decrease_updates_only_raters_direction(self):
+    def test_decrease_updates_only_source_participants_direction(self):
         self.score.current_score = 10
         self.score.save()
 
@@ -70,4 +70,12 @@ class ChangeRelationshipScoreTests(TestCase):
                 source_participant=self.first,
                 delta=0,
                 reason="이유",
+            )
+
+    def test_invalid_input_is_rejected_before_the_score_lookup(self):
+        with self.assertRaisesMessage(ValidationError, "0이 아닌 정수"):
+            change_relationship_score(
+                source_participant=Participant(),
+                delta=0,
+                reason=None,
             )
