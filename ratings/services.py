@@ -23,7 +23,7 @@ def _notify_recipient_after_commit(recipient_id: int) -> None:
 @transaction.atomic
 def change_relationship_score(
     *,
-    rater: Participant,
+    source_participant: Participant,
     delta: int,
     reason: str = "",
 ) -> ScoreChange:
@@ -37,23 +37,28 @@ def change_relationship_score(
     if len(normalized_reason) > 200:
         raise ValidationError("변경 이유는 200자 이하여야 합니다.")
 
-    score = RelationshipScore.objects.select_for_update().get(rater=rater)
-    resulting_score = score.value + delta
+    relationship_score = RelationshipScore.objects.select_for_update().get(
+        source_participant=source_participant
+    )
+    resulting_score = relationship_score.current_score + delta
     if not 0 <= resulting_score <= 100:
         raise ValidationError("친밀도는 0점보다 낮거나 100점보다 높을 수 없습니다.")
 
-    score.value = resulting_score
-    score.save(update_fields=("value", "updated_at"))
+    relationship_score.current_score = resulting_score
+    relationship_score.save(update_fields=("current_score", "updated_at"))
 
     change = ScoreChange.objects.create(
-        score=score,
-        changed_by=rater,
+        relationship_score=relationship_score,
+        changed_by=source_participant,
         delta=delta,
         reason=normalized_reason,
         resulting_score=resulting_score,
     )
     transaction.on_commit(
-        partial(_notify_recipient_after_commit, score.recipient_id),
+        partial(
+            _notify_recipient_after_commit,
+            relationship_score.target_participant_id,
+        ),
         robust=True,
     )
     return change

@@ -17,9 +17,9 @@ class ScoreDashboardTests(TestCase):
         self.client.force_login(self.first.user)
 
     def test_dashboard_shows_both_directional_scores(self):
-        self.first_to_second.value = 12
+        self.first_to_second.current_score = 12
         self.first_to_second.save()
-        self.second_to_first.value = 34
+        self.second_to_first.current_score = 34
         self.second_to_first.save()
 
         response = self.client.get(reverse("home"))
@@ -42,8 +42,8 @@ class ScoreDashboardTests(TestCase):
         self.assertRedirects(response, reverse("home"))
         self.first_to_second.refresh_from_db()
         self.second_to_first.refresh_from_db()
-        self.assertEqual(self.first_to_second.value, 5)
-        self.assertEqual(self.second_to_first.value, 0)
+        self.assertEqual(self.first_to_second.current_score, 5)
+        self.assertEqual(self.second_to_first.current_score, 0)
         change = ScoreChange.objects.get()
         self.assertEqual(change.changed_by, self.first)
         self.assertEqual(change.delta, 5)
@@ -51,7 +51,7 @@ class ScoreDashboardTests(TestCase):
         self.assertEqual(change.resulting_score, 5)
 
     def test_participant_can_decrease_their_score(self):
-        self.first_to_second.value = 10
+        self.first_to_second.current_score = 10
         self.first_to_second.save()
 
         response = self.client.post(
@@ -65,7 +65,7 @@ class ScoreDashboardTests(TestCase):
 
         self.assertRedirects(response, reverse("home"))
         self.first_to_second.refresh_from_db()
-        self.assertEqual(self.first_to_second.value, 7)
+        self.assertEqual(self.first_to_second.current_score, 7)
         self.assertEqual(ScoreChange.objects.get().delta, -3)
 
     def test_out_of_range_change_shows_error_without_writing(self):
@@ -81,7 +81,7 @@ class ScoreDashboardTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertContains(response, "0점보다 낮거나", status_code=400)
         self.first_to_second.refresh_from_db()
-        self.assertEqual(self.first_to_second.value, 0)
+        self.assertEqual(self.first_to_second.current_score, 0)
         self.assertFalse(ScoreChange.objects.exists())
 
     def test_reason_can_be_left_blank(self):
@@ -92,7 +92,7 @@ class ScoreDashboardTests(TestCase):
 
         self.assertRedirects(response, reverse("home"))
         self.first_to_second.refresh_from_db()
-        self.assertEqual(self.first_to_second.value, 1)
+        self.assertEqual(self.first_to_second.current_score, 1)
         self.assertEqual(ScoreChange.objects.get().reason, "")
 
     def test_reason_is_limited_to_200_characters(self):
@@ -117,7 +117,7 @@ class ScoreHistoryTests(TestCase):
 
     def create_change(self, number, *, reason=None):
         return ScoreChange.objects.create(
-            score=self.first_to_second,
+            relationship_score=self.first_to_second,
             changed_by=self.first,
             delta=1,
             reason=f"변경 이유 {number}" if reason is None else reason,

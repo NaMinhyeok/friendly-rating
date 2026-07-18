@@ -23,10 +23,13 @@ class ConcurrentScoreChangeTests(TransactionTestCase):
         def change_score():
             close_old_connections()
             try:
-                rater = Participant.objects.get(pk=self.first.pk)
+                source_participant = Participant.objects.get(pk=self.first.pk)
                 with CaptureQueriesContext(connection) as captured_queries:
                     start.wait(timeout=5)
-                    change = change_relationship_score(rater=rater, delta=1)
+                    change = change_relationship_score(
+                        source_participant=source_participant,
+                        delta=1,
+                    )
                 sql = [query["sql"] for query in captured_queries]
                 return change.resulting_score, sql
             finally:
@@ -46,7 +49,7 @@ class ConcurrentScoreChangeTests(TransactionTestCase):
             ScoreChange.objects.values_list("resulting_score", flat=True)
         )
 
-        self.assertEqual(self.score.value, 2)
+        self.assertEqual(self.score.current_score, 2)
         self.assertEqual(resulting_scores, [1, 2])
         self.assertEqual(recorded_scores, [1, 2])
         for _, queries in results:

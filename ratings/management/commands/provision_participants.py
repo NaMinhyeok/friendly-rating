@@ -52,12 +52,12 @@ class Command(BaseCommand):
 
         first, second = participants
         RelationshipScore.objects.update_or_create(
-            rater=first,
-            defaults={"recipient": second},
+            source_participant=first,
+            defaults={"target_participant": second},
         )
         RelationshipScore.objects.update_or_create(
-            rater=second,
-            defaults={"recipient": first},
+            source_participant=second,
+            defaults={"target_participant": first},
         )
 
         self.stdout.write(

@@ -10,19 +10,19 @@ class RelationshipScoreModelTests(TestCase):
     def test_scores_are_directional(self):
         first, second, first_to_second, second_to_first = create_participant_pair()
 
-        self.assertEqual(first_to_second.rater, first)
-        self.assertEqual(first_to_second.recipient, second)
-        self.assertEqual(second_to_first.rater, second)
-        self.assertEqual(second_to_first.recipient, first)
-        self.assertEqual(first_to_second.value, 0)
-        self.assertEqual(second_to_first.value, 0)
+        self.assertEqual(first_to_second.source_participant, first)
+        self.assertEqual(first_to_second.target_participant, second)
+        self.assertEqual(second_to_first.source_participant, second)
+        self.assertEqual(second_to_first.target_participant, first)
+        self.assertEqual(first_to_second.current_score, 0)
+        self.assertEqual(second_to_first.current_score, 0)
 
 
 class ScoreChangeModelTests(TestCase):
     def setUp(self):
         self.first, _, self.score, _ = create_participant_pair()
         self.change = ScoreChange.objects.create(
-            score=self.score,
+            relationship_score=self.score,
             changed_by=self.first,
             delta=5,
             reason="고마운 일이 있었어요",

@@ -83,7 +83,7 @@ def _deactivate_invalid_devices(devices, responses):
     ]
     if invalid_device_ids:
         PushDevice.objects.filter(pk__in=invalid_device_ids).update(
-            active=False,
+            is_active=False,
             updated_at=timezone.now(),
         )
 
@@ -95,8 +95,8 @@ def _send_score_change_notification(*, recipient_id: int) -> int:
     devices = list(
         PushDevice.objects.filter(
             participant_id=recipient_id,
-            active=True,
-        ).values_list("pk", "fid")
+            is_active=True,
+        ).values_list("pk", "firebase_installation_id")
     )
     if not devices:
         return 0

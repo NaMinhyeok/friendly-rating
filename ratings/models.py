@@ -32,33 +32,36 @@ class Participant(models.Model):
 
 
 class RelationshipScore(models.Model):
-    rater = models.OneToOneField(
+    source_participant = models.OneToOneField(
         Participant,
         on_delete=models.PROTECT,
         related_name="outgoing_score",
     )
-    recipient = models.OneToOneField(
+    target_participant = models.OneToOneField(
         Participant,
         on_delete=models.PROTECT,
         related_name="incoming_score",
     )
-    value = models.PositiveSmallIntegerField(default=0)
+    current_score = models.PositiveSmallIntegerField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
             models.CheckConstraint(
-                condition=Q(value__gte=0) & Q(value__lte=100),
+                condition=Q(current_score__gte=0) & Q(current_score__lte=100),
                 name="relationship_score_between_0_and_100",
             ),
             models.CheckConstraint(
-                condition=~Q(rater=F("recipient")),
+                condition=~Q(source_participant=F("target_participant")),
                 name="relationship_score_between_different_participants",
             ),
         ]
 
     def __str__(self):
-        return f"{self.rater} → {self.recipient}: {self.value}"
+        return (
+            f"{self.source_participant} → {self.target_participant}: "
+            f"{self.current_score}"
+        )
 
 
 class PushDevice(models.Model):
@@ -67,9 +70,9 @@ class PushDevice(models.Model):
         on_delete=models.CASCADE,
         related_name="push_devices",
     )
-    fid = models.CharField(max_length=255, unique=True)
+    firebase_installation_id = models.CharField(max_length=255, unique=True)
     user_agent = models.CharField(max_length=500, blank=True)
-    active = models.BooleanField(default=True, db_index=True)
+    is_active = models.BooleanField(default=True, db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -77,7 +80,7 @@ class PushDevice(models.Model):
         ordering = ("participant__slot", "-updated_at")
 
     def __str__(self):
-        state = "활성" if self.active else "비활성"
+        state = "활성" if self.is_active else "비활성"
         return f"{self.participant} 기기 ({state})"
 
 
@@ -90,7 +93,7 @@ class ImmutableScoreChangeQuerySet(models.QuerySet):
 
 
 class ScoreChange(models.Model):
-    score = models.ForeignKey(
+    relationship_score = models.ForeignKey(
         RelationshipScore,
         on_delete=models.PROTECT,
         related_name="changes",

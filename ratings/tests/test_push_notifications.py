@@ -54,22 +54,22 @@ class PushDeviceViewTests(TestCase):
 
         self.assertEqual(first_response.status_code, 201)
         self.assertEqual(second_response.status_code, 201)
-        self.assertEqual(self.first.push_devices.filter(active=True).count(), 2)
+        self.assertEqual(self.first.push_devices.filter(is_active=True).count(), 2)
 
     def test_registration_reactivates_and_reassigns_a_fid(self):
         PushDevice.objects.create(
             participant=self.second,
-            fid=VALID_FID,
-            active=False,
+            firebase_installation_id=VALID_FID,
+            is_active=False,
         )
         self.client.force_login(self.first.user)
 
         response = self.post_json("register-push-device")
 
-        device = PushDevice.objects.get(fid=VALID_FID)
+        device = PushDevice.objects.get(firebase_installation_id=VALID_FID)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(device.participant, self.first)
-        self.assertTrue(device.active)
+        self.assertTrue(device.is_active)
 
     def test_registration_keeps_only_the_five_most_recent_devices(self):
         self.client.force_login(self.first.user)
@@ -83,12 +83,14 @@ class PushDeviceViewTests(TestCase):
 
         devices = self.first.push_devices.order_by("updated_at")
         self.assertEqual(devices.count(), 5)
-        self.assertFalse(devices.filter(fid=f"c{'A' * 20}0").exists())
+        self.assertFalse(
+            devices.filter(firebase_installation_id=f"c{'A' * 20}0").exists()
+        )
 
     def test_participant_cannot_unregister_another_participants_device(self):
         device = PushDevice.objects.create(
             participant=self.second,
-            fid=VALID_FID,
+            firebase_installation_id=VALID_FID,
         )
         self.client.force_login(self.first.user)
 
@@ -96,7 +98,7 @@ class PushDeviceViewTests(TestCase):
 
         device.refresh_from_db()
         self.assertEqual(response.status_code, 200)
-        self.assertTrue(device.active)
+        self.assertTrue(device.is_active)
 
     def test_invalid_fid_is_rejected(self):
         self.client.force_login(self.first.user)
@@ -120,7 +122,7 @@ class PushDeviceViewTests(TestCase):
     def test_owned_device_can_be_unregistered(self):
         device = PushDevice.objects.create(
             participant=self.first,
-            fid=VALID_FID,
+            firebase_installation_id=VALID_FID,
         )
         self.client.force_login(self.first.user)
 
@@ -128,7 +130,7 @@ class PushDeviceViewTests(TestCase):
 
         device.refresh_from_db()
         self.assertEqual(response.status_code, 200)
-        self.assertFalse(device.active)
+        self.assertFalse(device.is_active)
 
 
 @override_settings(
@@ -147,8 +149,14 @@ class PushDeliveryTests(TestCase):
         send_each_for_multicast,
     ):
         get_firebase_app.return_value = object()
-        PushDevice.objects.create(participant=self.second, fid=VALID_FID)
-        PushDevice.objects.create(participant=self.second, fid=SECOND_FID)
+        PushDevice.objects.create(
+            participant=self.second,
+            firebase_installation_id=VALID_FID,
+        )
+        PushDevice.objects.create(
+            participant=self.second,
+            firebase_installation_id=SECOND_FID,
+        )
         send_each_for_multicast.return_value = SimpleNamespace(
             success_count=2,
             responses=[
@@ -180,7 +188,10 @@ class PushDeliveryTests(TestCase):
         send_each_for_multicast,
     ):
         get_firebase_app.return_value = object()
-        device = PushDevice.objects.create(participant=self.second, fid=VALID_FID)
+        device = PushDevice.objects.create(
+            participant=self.second,
+            firebase_installation_id=VALID_FID,
+        )
         send_each_for_multicast.return_value = SimpleNamespace(
             success_count=0,
             responses=[
@@ -194,12 +205,12 @@ class PushDeliveryTests(TestCase):
         send_score_change_notification(recipient_id=self.second.pk)
 
         device.refresh_from_db()
-        self.assertFalse(device.active)
+        self.assertFalse(device.is_active)
 
     @patch("ratings.services.send_score_change_notification")
     def test_score_change_notifies_recipient_only_after_commit(self, send_push):
         with self.captureOnCommitCallbacks(execute=False) as callbacks:
-            change_relationship_score(rater=self.first, delta=1)
+            change_relationship_score(source_participant=self.first, delta=1)
 
         send_push.assert_not_called()
         self.assertEqual(len(callbacks), 1)
@@ -213,10 +224,10 @@ class PushDeliveryTests(TestCase):
     def test_push_failure_does_not_undo_score_change(self, _send_push):
         with self.assertLogs("ratings.services", level="ERROR"):
             with self.captureOnCommitCallbacks(execute=True):
-                change_relationship_score(rater=self.first, delta=3)
+                change_relationship_score(source_participant=self.first, delta=3)
 
         self.score.refresh_from_db()
-        self.assertEqual(self.score.value, 3)
+        self.assertEqual(self.score.current_score, 3)
 
 
 class ServiceWorkerViewTests(TestCase):

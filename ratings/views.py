@@ -33,12 +33,14 @@ def get_current_participant(request):
 
 def get_dashboard_context(participant, *, score_form=None):
     scores = list(
-        RelationshipScore.objects.select_related("rater", "recipient").order_by(
-            "rater__slot"
-        )
+        RelationshipScore.objects.select_related(
+            "source_participant", "target_participant"
+        ).order_by("source_participant__slot")
     )
-    scores.sort(key=lambda score: score.rater_id != participant.pk)
-    own_score = next(score for score in scores if score.rater_id == participant.pk)
+    scores.sort(key=lambda score: score.source_participant_id != participant.pk)
+    own_score = next(
+        score for score in scores if score.source_participant_id == participant.pk
+    )
     return {
         "participant": participant,
         "scores": scores,
@@ -122,7 +124,7 @@ def change_score_view(request):
     if form.is_valid():
         try:
             change = change_relationship_score(
-                rater=participant,
+                source_participant=participant,
                 delta=form.delta,
                 reason=form.cleaned_data["reason"],
             )
@@ -150,8 +152,8 @@ def history_view(request):
     participant = get_current_participant(request)
     changes = ScoreChange.objects.select_related(
         "changed_by",
-        "score__rater",
-        "score__recipient",
+        "relationship_score__source_participant",
+        "relationship_score__target_participant",
     )
     page = Paginator(changes, 20).get_page(request.GET.get("page"))
     return render(
@@ -206,23 +208,23 @@ def register_push_device(request):
 
     Participant.objects.select_for_update().get(pk=participant.pk)
     _, created = PushDevice.objects.update_or_create(
-        fid=fid,
+        firebase_installation_id=fid,
         defaults={
             "participant": participant,
-            "active": True,
+            "is_active": True,
             "user_agent": request.META.get("HTTP_USER_AGENT", "")[:500],
         },
     )
     PushDevice.objects.filter(
         participant=participant,
-        active=False,
+        is_active=False,
     ).delete()
     retained_active_ids = list(
-        PushDevice.objects.filter(participant=participant, active=True)
+        PushDevice.objects.filter(participant=participant, is_active=True)
         .order_by("-updated_at", "-pk")
         .values_list("pk", flat=True)[:MAX_PUSH_DEVICES_PER_PARTICIPANT]
     )
-    PushDevice.objects.filter(participant=participant, active=True).exclude(
+    PushDevice.objects.filter(participant=participant, is_active=True).exclude(
         pk__in=retained_active_ids
     ).delete()
     return JsonResponse(
@@ -241,9 +243,9 @@ def unregister_push_device(request):
 
     PushDevice.objects.filter(
         participant=participant,
-        fid=fid,
+        firebase_installation_id=fid,
     ).update(
-        active=False,
+        is_active=False,
         updated_at=timezone.now(),
     )
     return JsonResponse({"ok": True, "registered": False})

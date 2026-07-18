@@ -18,11 +18,11 @@ def create_participant_pair():
         slot=Participant.Slot.SECOND,
     )
     first_to_second = RelationshipScore.objects.create(
-        rater=first,
-        recipient=second,
+        source_participant=first,
+        target_participant=second,
     )
     second_to_first = RelationshipScore.objects.create(
-        rater=second,
-        recipient=first,
+        source_participant=second,
+        target_participant=first,
     )
     return first, second, first_to_second, second_to_first
