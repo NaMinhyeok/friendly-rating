@@ -90,6 +90,24 @@ def login_view(request):
     )
 
 
+def login_lockout(request, _original_response=None, _credentials=None):
+    response = render(
+        request,
+        "ratings/login.html",
+        {
+            "form": PinLoginForm(request.POST or None, request=request),
+            "next": request.POST.get("next", request.GET.get("next", "")),
+            "login_rate_limited": True,
+            "login_rate_limit_message": settings.AXES_COOLOFF_MESSAGE,
+        },
+        status=settings.AXES_HTTP_RESPONSE_CODE,
+    )
+    response.headers["Retry-After"] = str(
+        int(settings.AXES_COOLOFF_TIME.total_seconds())
+    )
+    return response
+
+
 @require_POST
 def logout_view(request):
     auth_logout(request)

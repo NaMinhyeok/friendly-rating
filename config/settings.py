@@ -1,5 +1,6 @@
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -144,6 +145,7 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "axes",
     "ratings",
 ]
 
@@ -156,7 +158,26 @@ MIDDLEWARE = [
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
+    "axes.middleware.AxesMiddleware",
 ]
+
+AUTHENTICATION_BACKENDS = [
+    "axes.backends.AxesStandaloneBackend",
+    "django.contrib.auth.backends.ModelBackend",
+]
+
+AXES_HANDLER = "axes.handlers.database.AxesDatabaseHandler"
+AXES_LOCKOUT_PARAMETERS = ["username", "ip_address"]
+AXES_FAILURE_LIMIT = 5
+AXES_COOLOFF_TIME = timedelta(minutes=15)
+AXES_RESET_ON_SUCCESS = True
+AXES_RESET_COOL_OFF_ON_FAILURE_DURING_LOCKOUT = False
+AXES_PASSWORD_FORM_FIELD = "pin"
+AXES_CLIENT_IP_CALLABLE = "ratings.security.get_client_ip_address"
+AXES_LOCKOUT_CALLABLE = "ratings.views.login_lockout"
+AXES_HTTP_RESPONSE_CODE = 429
+AXES_COOLOFF_MESSAGE = "로그인 시도가 너무 많습니다. 15분 후 다시 시도해 주세요."
+AXES_DISABLE_ACCESS_LOG = True
 
 ROOT_URLCONF = "config.urls"
 

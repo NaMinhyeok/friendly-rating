@@ -18,6 +18,11 @@
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ next }}">
 
+        {% if login_rate_limited %}
+            <ul class="errorlist" role="alert">
+                <li>{{ login_rate_limit_message }}</li>
+            </ul>
+        {% endif %}
         {{ form.non_field_errors }}
 
         <fieldset class="field-group">
