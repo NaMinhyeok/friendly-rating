@@ -24,6 +24,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 html {
   min-width: 320px;
   background: var(--cream);
@@ -650,6 +654,132 @@ textarea:focus {
   font-size: 0.7rem;
 }
 
+.notification-card {
+  margin-top: 0.75rem;
+  padding: 1.15rem;
+}
+
+.notification-card__heading {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+}
+
+.notification-card__heading .eyebrow {
+  margin-bottom: 0.15rem;
+}
+
+.notification-card__heading h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  letter-spacing: -0.03em;
+}
+
+.notification-card__icon {
+  display: grid;
+  width: 2.7rem;
+  height: 2.7rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--coral-dark);
+  background: var(--coral-soft);
+}
+
+.notification-card__description {
+  margin: 0.85rem 0 0;
+  color: var(--ink);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.notification-status {
+  margin: 0.3rem 0 0.9rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.button--soft {
+  border: 1px solid rgba(232, 103, 88, 0.18);
+  color: var(--coral-dark);
+  background: #fff2ed;
+  box-shadow: none;
+}
+
+.button--soft:hover {
+  background: var(--coral-soft);
+}
+
+.button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+  transform: none;
+}
+
+.notification-toggle--active {
+  border-color: var(--line);
+  color: var(--muted);
+  background: #fffdfb;
+}
+
+.install-guide {
+  margin: 0.9rem 0 0;
+  padding: 0.9rem;
+  border-radius: 14px;
+  color: #5a4944;
+  background: var(--cream-deep);
+  font-size: 0.78rem;
+}
+
+.install-guide strong {
+  display: block;
+  color: var(--ink);
+}
+
+.install-guide ol {
+  margin: 0.55rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.install-guide li + li {
+  margin-top: 0.3rem;
+}
+
+.share-symbol {
+  display: inline-grid;
+  width: 1.15rem;
+  height: 1.15rem;
+  place-items: center;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  color: var(--coral-dark);
+  font-weight: 850;
+  line-height: 1;
+}
+
+.foreground-notification {
+  position: fixed;
+  z-index: 20;
+  top: max(1rem, env(safe-area-inset-top));
+  left: 50%;
+  display: flex;
+  width: min(calc(100% - 2rem), 24rem);
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid rgba(232, 103, 88, 0.2);
+  border-radius: 15px;
+  color: var(--ink);
+  background: rgba(255, 253, 251, 0.97);
+  box-shadow: var(--shadow);
+  font-size: 0.82rem;
+  transform: translateX(-50%);
+}
+
+.foreground-notification span {
+  color: var(--coral);
+}
+
 .message-stack {
   position: relative;
   z-index: 2;
@@ -847,6 +977,10 @@ textarea:focus {
 
   .change-card {
     margin-top: 1.15rem;
+  }
+
+  .notification-card {
+    padding: 1.3rem 1.5rem;
   }
 }
 

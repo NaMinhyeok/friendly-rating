@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}우리 사이{% endblock %}
 {% block body_class %}app-page{% endblock %}
@@ -101,5 +102,52 @@
         </span>
         <span aria-hidden="true">›</span>
     </a>
+
+    {% if push_notifications_enabled %}
+    <section
+        class="surface notification-card"
+        aria-labelledby="notification-title"
+        data-notification-settings
+        data-vapid-key="{{ firebase_vapid_key|default:'' }}"
+        data-register-url="/notifications/devices/register/"
+        data-unregister-url="/notifications/devices/unregister/"
+    >
+        <div class="notification-card__heading">
+            <span class="notification-card__icon" aria-hidden="true">♥</span>
+            <div>
+                <p class="eyebrow">STAY CLOSE</p>
+                <h2 id="notification-title">새 마음 알림</h2>
+            </div>
+        </div>
+
+        <p class="notification-card__description" data-notification-description>
+            상대방이 마음을 기록하면 조용히 알려드릴게요.
+        </p>
+        <p class="notification-status" data-notification-status role="status" aria-live="polite">
+            알림을 받을 수 있는지 확인하고 있어요.
+        </p>
+
+        <div class="install-guide" data-install-guide hidden>
+            <strong>먼저 홈 화면에 추가해 주세요</strong>
+            <ol>
+                <li>Safari 아래의 <span class="share-symbol" aria-hidden="true">↑</span> <b>공유</b>를 눌러요.</li>
+                <li><b>홈 화면에 추가</b>를 선택해요.</li>
+                <li>홈 화면의 <b>우리 사이</b>를 열고 알림을 켜요.</li>
+            </ol>
+        </div>
+
+        <button class="button button--soft button--full notification-toggle" type="button" data-notification-toggle hidden>
+            <span data-notification-button-label>알림 받기</span>
+            <span aria-hidden="true">♡</span>
+        </button>
+    </section>
+    {% endif %}
 </main>
+{% endblock %}
+
+{% block extra_scripts %}
+    {% if push_notifications_enabled %}
+    {{ firebase_config|json_script:"firebase-config" }}
+    <script type="module" src="{% static 'ratings/notifications.js' %}"></script>
+    {% endif %}
 {% endblock %}

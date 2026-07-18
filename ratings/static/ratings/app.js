@@ -15,3 +15,17 @@ if (reasonInput && characterCurrent) {
   reasonInput.addEventListener("input", updateCharacterCount);
   updateCharacterCount();
 }
+
+if ("serviceWorker" in navigator) {
+  window.woorisaiServiceWorkerReady = navigator.serviceWorker
+    .register("/service-worker.js", {
+      scope: "/",
+      updateViaCache: "none",
+    })
+    .catch((error) => {
+      console.warn("우리 사이 서비스 워커를 등록하지 못했어요.", error);
+      return null;
+    });
+} else {
+  window.woorisaiServiceWorkerReady = Promise.resolve(null);
+}
