@@ -1,35 +1,54 @@
-<!doctype html>
-<html lang="ko">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>로그인 · Friendly Rating</title>
-</head>
-<body>
-    <main>
-        <h1>우리 둘의 친밀도</h1>
-        <p>내 이름을 고르고 PIN을 입력해 주세요.</p>
+{% extends "base.html" %}
 
-        <form method="post" novalidate>
-            {% csrf_token %}
-            <input type="hidden" name="next" value="{{ next }}">
+{% block title %}로그인 · 우리 사이{% endblock %}
+{% block body_class %}auth-page{% endblock %}
 
-            {{ form.non_field_errors }}
+{% block content %}
+<main class="auth-shell">
+    <section class="auth-intro" aria-labelledby="login-title">
+        <div class="brand-mark" aria-hidden="true">
+            <span>♥</span>
+        </div>
+        <p class="eyebrow">JUST BETWEEN US</p>
+        <h1 id="login-title">우리 둘만의<br>작은 마음 기록</h1>
+        <p class="auth-description">서로를 생각하는 마음을<br>차곡차곡 쌓아 보세요.</p>
+    </section>
 
-            <fieldset>
-                <legend>{{ form.participant.label }}</legend>
-                {{ form.participant }}
-                {{ form.participant.errors }}
-            </fieldset>
+    <form class="surface auth-card" method="post" novalidate>
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next }}">
 
-            <div>
-                <label for="{{ form.pin.id_for_label }}">{{ form.pin.label }}</label>
-                {{ form.pin }}
-                {{ form.pin.errors }}
+        {{ form.non_field_errors }}
+
+        <fieldset class="field-group">
+            <legend class="field-label">누구인가요?</legend>
+            <div class="name-options">
+                {% for radio in form.participant %}
+                    <label class="name-option">
+                        {{ radio.tag }}
+                        <span class="name-option__content">
+                            <span class="name-option__avatar" aria-hidden="true">{{ radio.choice_label|first }}</span>
+                            <span>{{ radio.choice_label }}</span>
+                        </span>
+                    </label>
+                {% endfor %}
             </div>
+            {{ form.participant.errors }}
+        </fieldset>
 
-            <button type="submit">들어가기</button>
-        </form>
-    </main>
-</body>
-</html>
+        <div class="field-group">
+            <label class="field-label" for="{{ form.pin.id_for_label }}">{{ form.pin.label }}</label>
+            {{ form.pin }}
+            <p class="field-help">숫자 네 자리를 입력해 주세요.</p>
+            {{ form.pin.errors }}
+        </div>
+
+        <button class="button button--primary button--full" type="submit">
+            마음 공간으로 들어가기
+            <span aria-hidden="true">→</span>
+        </button>
+    </form>
+
+    <p class="auth-footnote"><span aria-hidden="true">✦</span> 두 사람만 들어올 수 있는 비밀 공간이에요</p>
+</main>
+{% endblock %}

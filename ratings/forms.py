@@ -24,6 +24,7 @@ class PinLoginForm(forms.Form):
                 "inputmode": "numeric",
                 "pattern": "[0-9]{4}",
                 "placeholder": "4자리 PIN",
+                "data-pin-input": "",
             }
         ),
     )

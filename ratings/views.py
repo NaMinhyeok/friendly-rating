@@ -29,6 +29,7 @@ def get_dashboard_context(participant, *, score_form=None):
             "rater__slot"
         )
     )
+    scores.sort(key=lambda score: score.rater_id != participant.pk)
     own_score = next(score for score in scores if score.rater_id == participant.pk)
     return {
         "participant": participant,

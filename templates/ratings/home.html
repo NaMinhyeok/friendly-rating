@@ -1,63 +1,105 @@
-<!doctype html>
-<html lang="ko">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Friendly Rating</title>
-</head>
-<body>
-    <main>
-        <h1>안녕하세요, {{ participant.display_name }}!</h1>
+{% extends "base.html" %}
 
-        {% if messages %}
-            <ul>
-                {% for message in messages %}<li>{{ message }}</li>{% endfor %}
-            </ul>
-        {% endif %}
+{% block title %}우리 사이{% endblock %}
+{% block body_class %}app-page{% endblock %}
 
-        <section aria-labelledby="scores-title">
-            <h2 id="scores-title">우리의 친밀도</h2>
-            {% for score in scores %}
-                <article>
-                    <p>{{ score.rater.display_name }} → {{ score.recipient.display_name }}</p>
-                    <strong>{{ score.value }}점</strong>
-                </article>
-            {% endfor %}
-        </section>
+{% block content %}
+<header class="app-header">
+    <a class="mini-brand" href="{% url 'home' %}" aria-label="우리 사이 홈">
+        <span class="mini-brand__mark" aria-hidden="true">♥</span>
+        <span>우리 사이</span>
+    </a>
+    <form method="post" action="{% url 'logout' %}">
+        {% csrf_token %}
+        <button class="text-button" type="submit">로그아웃</button>
+    </form>
+</header>
 
-        <section aria-labelledby="change-title">
-            <h2 id="change-title">{{ own_score.recipient.display_name }}에게 느끼는 친밀도 변경</h2>
-            <form method="post" action="{% url 'change-score' %}" novalidate>
-                {% csrf_token %}
-                {{ score_form.non_field_errors }}
+<main class="app-shell">
+    {% include "ratings/_messages.html" %}
 
-                <fieldset>
-                    <legend>{{ score_form.operation.label }}</legend>
-                    {{ score_form.operation }}
-                    {{ score_form.operation.errors }}
-                </fieldset>
+    <section class="hero" aria-labelledby="dashboard-title">
+        <p class="eyebrow">{{ participant.display_name }}님의 마음 공간</p>
+        <h1 id="dashboard-title">오늘 우리 사이는<br><span>몇 점일까요?</span></h1>
+        <p>점수도 이유도 서로에게 솔직하게 보여요.</p>
+    </section>
 
-                <div>
-                    <label for="{{ score_form.amount.id_for_label }}">{{ score_form.amount.label }}</label>
-                    {{ score_form.amount }}
-                    {{ score_form.amount.errors }}
+    <section class="score-grid" aria-label="현재 친밀도 점수">
+        {% for score in scores %}
+            <article class="surface score-card{% if score.rater_id == participant.id %} score-card--mine{% endif %}">
+                <div class="score-card__topline">
+                    <span class="score-owner">
+                        {% if score.rater_id == participant.id %}내가 느끼는 마음{% else %}{{ score.rater.display_name }}님의 마음{% endif %}
+                    </span>
+                    {% if score.rater_id == participant.id %}<span class="pill">내 점수</span>{% endif %}
                 </div>
-
-                <div>
-                    <label for="{{ score_form.reason.id_for_label }}">{{ score_form.reason.label }}</label>
-                    {{ score_form.reason }}
-                    {{ score_form.reason.errors }}
+                <p class="score-direction" aria-label="{{ score.rater.display_name }} → {{ score.recipient.display_name }}">{{ score.rater.display_name }} <span aria-hidden="true">→</span> {{ score.recipient.display_name }}</p>
+                <p class="score-value" aria-label="{{ score.value }}점"><strong>{{ score.value }}</strong><span>/ 100</span></p>
+                <div class="score-track" role="img" aria-label="100점 중 {{ score.value }}점">
+                    <span style="width: {{ score.value }}%"></span>
                 </div>
+            </article>
+        {% endfor %}
+    </section>
 
-                <button type="submit">변경하기</button>
-            </form>
-        </section>
+    <section class="surface change-card" aria-labelledby="change-title">
+        <div class="section-heading">
+            <div>
+                <p class="eyebrow">MY FEELING</p>
+                <h2 id="change-title">{{ own_score.recipient.display_name }}님을 향한 마음</h2>
+            </div>
+            <span class="heart-badge" aria-hidden="true">♥</span>
+        </div>
 
-        <p><a href="{% url 'history' %}">전체 변경 기록 보기</a></p>
-        <form method="post" action="{% url 'logout' %}">
+        <form method="post" action="{% url 'change-score' %}" novalidate>
             {% csrf_token %}
-            <button type="submit">로그아웃</button>
+            {{ score_form.non_field_errors }}
+
+            <fieldset class="field-group">
+                <legend class="field-label">{{ score_form.operation.label }}</legend>
+                <div class="segment-control">
+                    {% for radio in score_form.operation %}
+                        <label class="segment-option">
+                            {{ radio.tag }}
+                            <span>{% if radio.data.value == 'increase' %}+{% else %}−{% endif %} {{ radio.choice_label }}</span>
+                        </label>
+                    {% endfor %}
+                </div>
+                {{ score_form.operation.errors }}
+            </fieldset>
+
+            <div class="field-group">
+                <label class="field-label" for="{{ score_form.amount.id_for_label }}">{{ score_form.amount.label }}</label>
+                <div class="score-input-wrap">
+                    {{ score_form.amount }}
+                    <span>점</span>
+                </div>
+                {{ score_form.amount.errors }}
+            </div>
+
+            <div class="field-group">
+                <div class="field-label-row">
+                    <label class="field-label" for="{{ score_form.reason.id_for_label }}">{{ score_form.reason.label }}</label>
+                    <span class="character-count"><span data-character-current>0</span>/200</span>
+                </div>
+                {{ score_form.reason }}
+                {{ score_form.reason.errors }}
+            </div>
+
+            <button class="button button--primary button--full" type="submit">
+                이 마음 기록하기
+                <span aria-hidden="true">♥</span>
+            </button>
         </form>
-    </main>
-</body>
-</html>
+    </section>
+
+    <a class="surface history-link" href="{% url 'history' %}">
+        <span class="history-link__icon" aria-hidden="true">↗</span>
+        <span>
+            <strong>우리의 마음 기록</strong>
+            <small>지금까지 주고받은 점수를 모두 볼 수 있어요</small>
+        </span>
+        <span aria-hidden="true">›</span>
+    </a>
+</main>
+{% endblock %}

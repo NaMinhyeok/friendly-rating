@@ -1,49 +1,68 @@
-<!doctype html>
-<html lang="ko">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>변경 기록 · Friendly Rating</title>
-</head>
-<body>
-    <main>
-        <header>
-            <a href="{% url 'home' %}">홈으로</a>
-            <h1>친밀도 변경 기록</h1>
-        </header>
+{% extends "base.html" %}
 
-        {% if page.object_list %}
-            <ol>
-                {% for change in page %}
-                    <li>
-                        <p>{{ change.score.rater.display_name }} → {{ change.score.recipient.display_name }}</p>
-                        <strong>
-                            {% if change.delta > 0 %}+{% endif %}{{ change.delta }}점
-                        </strong>
-                        <p>변경자 {{ change.changed_by.display_name }}</p>
-                        <p>{{ change.reason }}</p>
-                        <p>변경 후 {{ change.resulting_score }}점</p>
-                        <time datetime="{{ change.created_at|date:'c' }}">
-                            {{ change.created_at|date:"Y.m.d H:i" }}
-                        </time>
-                    </li>
-                {% endfor %}
-            </ol>
-        {% else %}
-            <p>아직 변경 기록이 없어요.</p>
-        {% endif %}
+{% block title %}마음 기록 · 우리 사이{% endblock %}
+{% block body_class %}app-page{% endblock %}
 
-        {% if page.paginator.num_pages > 1 %}
-            <nav aria-label="변경 기록 페이지">
-                {% if page.has_previous %}
-                    <a href="?page={{ page.previous_page_number }}">이전</a>
-                {% endif %}
-                <span>{{ page.number }} / {{ page.paginator.num_pages }}</span>
-                {% if page.has_next %}
-                    <a href="?page={{ page.next_page_number }}">다음</a>
-                {% endif %}
-            </nav>
-        {% endif %}
-    </main>
-</body>
-</html>
+{% block content %}
+<header class="app-header">
+    <a class="back-link" href="{% url 'home' %}"><span aria-hidden="true">←</span> 홈으로</a>
+    <span class="mini-brand"><span class="mini-brand__mark" aria-hidden="true">♥</span><span>우리 사이</span></span>
+</header>
+
+<main class="app-shell app-shell--narrow">
+    <section class="hero hero--compact" aria-labelledby="history-title">
+        <p class="eyebrow">OUR MEMORIES</p>
+        <h1 id="history-title">우리의 마음 기록</h1>
+        <p>작은 순간들이 모여 지금의 사이가 되었어요.</p>
+    </section>
+
+    {% if page.object_list %}
+        <ol class="timeline">
+            {% for change in page %}
+                <li class="timeline-item">
+                    <span class="timeline-dot" aria-hidden="true"></span>
+                    <article class="surface history-card">
+                        <div class="history-card__header">
+                            <div>
+                                <p class="history-direction">{{ change.score.rater.display_name }} → {{ change.score.recipient.display_name }}</p>
+                                <time datetime="{{ change.created_at|date:'c' }}">{{ change.created_at|date:"Y.m.d H:i" }}</time>
+                            </div>
+                            <strong class="delta{% if change.delta > 0 %} delta--positive{% else %} delta--negative{% endif %}">
+                                {% if change.delta > 0 %}+{% endif %}{{ change.delta }}점
+                            </strong>
+                        </div>
+                        <p class="history-reason">“{{ change.reason }}”</p>
+                        <footer>
+                            <span>변경자 {{ change.changed_by.display_name }}</span>
+                            <span aria-label="변경 후 {{ change.resulting_score }}점">변경 후 <strong>{{ change.resulting_score }}점</strong></span>
+                        </footer>
+                    </article>
+                </li>
+            {% endfor %}
+        </ol>
+    {% else %}
+        <section class="surface empty-state">
+            <span aria-hidden="true">♡</span>
+            <h2>아직 기록이 없어요</h2>
+            <p>첫 마음을 남기면 여기에 차곡차곡 쌓여요.</p>
+            <a class="button button--primary" href="{% url 'home' %}">첫 기록 남기기</a>
+        </section>
+    {% endif %}
+
+    {% if page.paginator.num_pages > 1 %}
+        <nav class="pagination" aria-label="변경 기록 페이지">
+            {% if page.has_previous %}
+                <a href="?page={{ page.previous_page_number }}">← 이전</a>
+            {% else %}
+                <span></span>
+            {% endif %}
+            <strong>{{ page.number }} <span>/ {{ page.paginator.num_pages }}</span></strong>
+            {% if page.has_next %}
+                <a href="?page={{ page.next_page_number }}">다음 →</a>
+            {% else %}
+                <span></span>
+            {% endif %}
+        </nav>
+    {% endif %}
+</main>
+{% endblock %}
