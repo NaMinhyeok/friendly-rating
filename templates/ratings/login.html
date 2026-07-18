@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>로그인 · Friendly Rating</title>
+</head>
+<body>
+    <main>
+        <h1>우리 둘의 친밀도</h1>
+        <p>내 이름을 고르고 PIN을 입력해 주세요.</p>
+
+        <form method="post" novalidate>
+            {% csrf_token %}
+            <input type="hidden" name="next" value="{{ next }}">
+
+            {{ form.non_field_errors }}
+
+            <fieldset>
+                <legend>{{ form.participant.label }}</legend>
+                {{ form.participant }}
+                {{ form.participant.errors }}
+            </fieldset>
+
+            <div>
+                <label for="{{ form.pin.id_for_label }}">{{ form.pin.label }}</label>
+                {{ form.pin }}
+                {{ form.pin.errors }}
+            </div>
+
+            <button type="submit">들어가기</button>
+        </form>
+    </main>
+</body>
+</html>
