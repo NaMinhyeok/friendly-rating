@@ -27,17 +27,17 @@
 
     <section class="score-grid" aria-label="현재 친밀도 점수">
         {% for score in scores %}
-            <article class="surface score-card{% if score.rater_id == participant.id %} score-card--mine{% endif %}">
+            <article class="surface score-card{% if score.source_participant_id == participant.id %} score-card--mine{% endif %}">
                 <div class="score-card__topline">
                     <span class="score-owner">
-                        {% if score.rater_id == participant.id %}내가 느끼는 마음{% else %}{{ score.rater.display_name }}님의 마음{% endif %}
+                        {% if score.source_participant_id == participant.id %}내가 느끼는 마음{% else %}{{ score.source_participant.display_name }}님의 마음{% endif %}
                     </span>
-                    {% if score.rater_id == participant.id %}<span class="pill">내 점수</span>{% endif %}
+                    {% if score.source_participant_id == participant.id %}<span class="pill">내 점수</span>{% endif %}
                 </div>
-                <p class="score-direction" aria-label="{{ score.rater.display_name }} → {{ score.recipient.display_name }}">{{ score.rater.display_name }} <span aria-hidden="true">→</span> {{ score.recipient.display_name }}</p>
-                <p class="score-value" aria-label="{{ score.value }}점"><strong>{{ score.value }}</strong><span>/ 100</span></p>
-                <div class="score-track" role="img" aria-label="100점 중 {{ score.value }}점">
-                    <span style="width: {{ score.value }}%"></span>
+                <p class="score-direction" aria-label="{{ score.source_participant.display_name }} → {{ score.target_participant.display_name }}">{{ score.source_participant.display_name }} <span aria-hidden="true">→</span> {{ score.target_participant.display_name }}</p>
+                <p class="score-value" aria-label="{{ score.current_score }}점"><strong>{{ score.current_score }}</strong><span>/ 100</span></p>
+                <div class="score-track" role="img" aria-label="100점 중 {{ score.current_score }}점">
+                    <span style="width: {{ score.current_score }}%"></span>
                 </div>
             </article>
         {% endfor %}
@@ -47,7 +47,7 @@
         <div class="section-heading">
             <div>
                 <p class="eyebrow">MY FEELING</p>
-                <h2 id="change-title">{{ own_score.recipient.display_name }}님을 향한 마음</h2>
+                <h2 id="change-title">{{ own_score.target_participant.display_name }}님을 향한 마음</h2>
             </div>
             <span class="heart-badge" aria-hidden="true">♥</span>
         </div>

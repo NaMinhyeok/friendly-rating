@@ -24,7 +24,7 @@
                     <article class="surface history-card">
                         <div class="history-card__header">
                             <div>
-                                <p class="history-direction">{{ change.score.rater.display_name }} → {{ change.score.recipient.display_name }}</p>
+                                <p class="history-direction">{{ change.relationship_score.source_participant.display_name }} → {{ change.relationship_score.target_participant.display_name }}</p>
                                 <time datetime="{{ change.created_at|date:'c' }}">{{ change.created_at|date:"Y.m.d H:i" }}</time>
                             </div>
                             <strong class="delta{% if change.delta > 0 %} delta--positive{% else %} delta--negative{% endif %}">
