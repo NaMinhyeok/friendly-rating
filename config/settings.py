@@ -1,5 +1,7 @@
+import json
 import os
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import dj_database_url
 from django.core.exceptions import ImproperlyConfigured
@@ -17,6 +19,26 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+
+
+def env_json_object(name: str) -> dict[str, str]:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return {}
+
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    return {
+        key: item
+        for key, item in parsed.items()
+        if isinstance(key, str) and isinstance(item, str)
+    }
 
 
 IS_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT"))
@@ -40,6 +62,80 @@ if IS_RAILWAY:
 if railway_public_domain:
     ALLOWED_HOSTS.append(railway_public_domain)
     CSRF_TRUSTED_ORIGINS.append(f"https://{railway_public_domain}")
+
+public_base_url_default = (
+    f"https://{railway_public_domain}/" if railway_public_domain else ""
+)
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", public_base_url_default).strip()
+if PUBLIC_BASE_URL:
+    PUBLIC_BASE_URL = f"{PUBLIC_BASE_URL.rstrip('/')}/"
+
+
+# Firebase Cloud Messaging
+
+_firebase_public_keys = {
+    "apiKey",
+    "appId",
+    "authDomain",
+    "messagingSenderId",
+    "projectId",
+    "storageBucket",
+}
+FIREBASE_WEB_CONFIG = {
+    key: value
+    for key, value in env_json_object("FIREBASE_WEB_CONFIG_JSON").items()
+    if key in _firebase_public_keys
+}
+FIREBASE_VAPID_PUBLIC_KEY = os.getenv("FIREBASE_VAPID_PUBLIC_KEY", "").strip()
+FIREBASE_SERVICE_ACCOUNT_JSON = os.getenv("FIREBASE_SERVICE_ACCOUNT_JSON", "").strip()
+PUSH_NOTIFICATIONS_ENABLED = env_bool("PUSH_NOTIFICATIONS_ENABLED")
+_firebase_service_account = env_json_object("FIREBASE_SERVICE_ACCOUNT_JSON")
+
+_firebase_required_public_keys = {
+    "apiKey",
+    "appId",
+    "authDomain",
+    "messagingSenderId",
+    "projectId",
+}
+_firebase_public_config_is_valid = all(
+    FIREBASE_WEB_CONFIG.get(key) for key in _firebase_required_public_keys
+)
+_firebase_vapid_key_is_valid = (
+    80 <= len(FIREBASE_VAPID_PUBLIC_KEY) <= 180
+    and all(
+        character.isalnum() or character in "-_"
+        for character in FIREBASE_VAPID_PUBLIC_KEY
+    )
+)
+_firebase_service_account_is_valid = (
+    _firebase_service_account.get("type") == "service_account"
+    and all(
+        _firebase_service_account.get(key)
+        for key in ("project_id", "client_email", "private_key", "token_uri")
+    )
+    and _firebase_service_account.get("project_id")
+    == FIREBASE_WEB_CONFIG.get("projectId")
+)
+_public_base_url = urlsplit(PUBLIC_BASE_URL)
+_public_base_url_is_valid = (
+    _public_base_url.scheme == "https"
+    and bool(_public_base_url.netloc)
+    and not _public_base_url.query
+    and not _public_base_url.fragment
+)
+PUSH_NOTIFICATIONS_AVAILABLE = (
+    PUSH_NOTIFICATIONS_ENABLED
+    and _firebase_public_config_is_valid
+    and _firebase_vapid_key_is_valid
+    and _firebase_service_account_is_valid
+    and _public_base_url_is_valid
+)
+if PUSH_NOTIFICATIONS_ENABLED and not PUSH_NOTIFICATIONS_AVAILABLE:
+    raise ImproperlyConfigured(
+        "Push notifications are enabled but Firebase credentials, VAPID key, "
+        "matching project IDs, or an HTTPS PUBLIC_BASE_URL are invalid."
+    )
 
 
 # Application definition

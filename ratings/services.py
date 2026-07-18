@@ -1,7 +1,24 @@
+import logging
+from functools import partial
+
 from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from .models import Participant, RelationshipScore, ScoreChange
+from .notifications import send_score_change_notification
+
+
+logger = logging.getLogger(__name__)
+
+
+def _notify_recipient_after_commit(recipient_id: int) -> None:
+    try:
+        send_score_change_notification(recipient_id=recipient_id)
+    except Exception:
+        logger.exception(
+            "Unexpected error while dispatching a score-change notification.",
+            extra={"recipient_id": recipient_id},
+        )
 
 
 @transaction.atomic
@@ -29,10 +46,15 @@ def change_relationship_score(
     score.value = resulting_score
     score.save(update_fields=("value", "updated_at"))
 
-    return ScoreChange.objects.create(
+    change = ScoreChange.objects.create(
         score=score,
         changed_by=rater,
         delta=delta,
         reason=normalized_reason,
         resulting_score=resulting_score,
     )
+    transaction.on_commit(
+        partial(_notify_recipient_after_commit, score.recipient_id),
+        robust=True,
+    )
+    return change

@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Participant, RelationshipScore, ScoreChange
+from .models import Participant, PushDevice, RelationshipScore, ScoreChange
 
 
 @admin.register(Participant)
@@ -44,4 +44,15 @@ class ScoreChangeAdmin(admin.ModelAdmin):
         return False
 
     def has_delete_permission(self, request, obj=None):
+        return False
+
+
+@admin.register(PushDevice)
+class PushDeviceAdmin(admin.ModelAdmin):
+    list_display = ("participant", "active", "updated_at", "created_at")
+    list_filter = ("active", "participant")
+    search_fields = ("participant__display_name", "fid")
+    readonly_fields = ("participant", "fid", "user_agent", "created_at", "updated_at")
+
+    def has_add_permission(self, request):
         return False

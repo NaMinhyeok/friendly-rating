@@ -61,6 +61,26 @@ class RelationshipScore(models.Model):
         return f"{self.rater} → {self.recipient}: {self.value}"
 
 
+class PushDevice(models.Model):
+    participant = models.ForeignKey(
+        Participant,
+        on_delete=models.CASCADE,
+        related_name="push_devices",
+    )
+    fid = models.CharField(max_length=255, unique=True)
+    user_agent = models.CharField(max_length=500, blank=True)
+    active = models.BooleanField(default=True, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ("participant__slot", "-updated_at")
+
+    def __str__(self):
+        state = "활성" if self.active else "비활성"
+        return f"{self.participant} 기기 ({state})"
+
+
 class ImmutableScoreChangeQuerySet(models.QuerySet):
     def update(self, **kwargs):
         raise ValidationError("점수 변경 기록은 수정할 수 없습니다.")
