@@ -4,11 +4,20 @@ from pathlib import Path
 from django.contrib.staticfiles import finders
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from whitenoise.middleware import WhiteNoiseMiddleware
 
 from .factories import create_participant_pair
 
 
 class PwaAssetTests(TestCase):
+    def test_manifest_uses_the_web_app_manifest_content_type(self):
+        middleware = WhiteNoiseMiddleware(lambda request: None)
+
+        self.assertEqual(
+            middleware.media_types.get_type("manifest.webmanifest"),
+            "application/manifest+json",
+        )
+
     def test_manifest_declares_standalone_app_and_required_icons(self):
         manifest_path = finders.find("ratings/manifest.webmanifest")
         self.assertIsNotNone(manifest_path)
