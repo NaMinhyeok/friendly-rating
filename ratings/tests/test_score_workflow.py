@@ -84,18 +84,24 @@ class ScoreDashboardTests(TestCase):
         self.assertEqual(self.first_to_second.value, 0)
         self.assertFalse(ScoreChange.objects.exists())
 
-    def test_reason_is_required_and_limited_to_200_characters(self):
-        missing_response = self.client.post(
+    def test_reason_can_be_left_blank(self):
+        response = self.client.post(
             reverse("change-score"),
-            {"operation": "increase", "amount": 1, "reason": ""},
+            {"operation": "increase", "amount": 1},
         )
-        long_response = self.client.post(
+
+        self.assertRedirects(response, reverse("home"))
+        self.first_to_second.refresh_from_db()
+        self.assertEqual(self.first_to_second.value, 1)
+        self.assertEqual(ScoreChange.objects.get().reason, "")
+
+    def test_reason_is_limited_to_200_characters(self):
+        response = self.client.post(
             reverse("change-score"),
             {"operation": "increase", "amount": 1, "reason": "가" * 201},
         )
 
-        self.assertContains(missing_response, "변경 이유를 입력해 주세요", status_code=400)
-        self.assertContains(long_response, "200자", status_code=400)
+        self.assertContains(response, "200자", status_code=400)
         self.assertFalse(ScoreChange.objects.exists())
 
     def test_score_change_requires_post(self):
@@ -109,12 +115,12 @@ class ScoreHistoryTests(TestCase):
         self.first, self.second, self.first_to_second, _ = create_participant_pair()
         self.client.force_login(self.second.user)
 
-    def create_change(self, number):
+    def create_change(self, number, *, reason=None):
         return ScoreChange.objects.create(
             score=self.first_to_second,
             changed_by=self.first,
             delta=1,
-            reason=f"변경 이유 {number}",
+            reason=f"변경 이유 {number}" if reason is None else reason,
             resulting_score=1,
         )
 
@@ -128,6 +134,13 @@ class ScoreHistoryTests(TestCase):
         self.assertContains(response, "변경자 첫 번째")
         self.assertContains(response, "변경 이유 1")
         self.assertContains(response, "변경 후 1점")
+
+    def test_blank_reason_does_not_render_empty_quotes(self):
+        self.create_change(1, reason="")
+
+        response = self.client.get(reverse("history"))
+
+        self.assertNotContains(response, '<p class="history-reason">')
 
     def test_history_is_paginated_twenty_per_page(self):
         for number in range(21):

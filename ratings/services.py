@@ -9,17 +9,15 @@ def change_relationship_score(
     *,
     rater: Participant,
     delta: int,
-    reason: str,
+    reason: str = "",
 ) -> ScoreChange:
     if isinstance(delta, bool) or not isinstance(delta, int) or delta == 0:
         raise ValidationError("변경 점수는 0이 아닌 정수여야 합니다.")
 
     if not isinstance(reason, str):
-        raise ValidationError("변경 이유를 입력해 주세요.")
+        raise ValidationError("변경 이유는 문자열이어야 합니다.")
 
     normalized_reason = reason.strip()
-    if not normalized_reason:
-        raise ValidationError("변경 이유를 입력해 주세요.")
     if len(normalized_reason) > 200:
         raise ValidationError("변경 이유는 200자 이하여야 합니다.")
 

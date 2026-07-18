@@ -31,7 +31,9 @@
                                 {% if change.delta > 0 %}+{% endif %}{{ change.delta }}점
                             </strong>
                         </div>
-                        <p class="history-reason">“{{ change.reason }}”</p>
+                        {% if change.reason %}
+                            <p class="history-reason">“{{ change.reason }}”</p>
+                        {% endif %}
                         <footer>
                             <span>변경자 {{ change.changed_by.display_name }}</span>
                             <span aria-label="변경 후 {{ change.resulting_score }}점">변경 후 <strong>{{ change.resulting_score }}점</strong></span>

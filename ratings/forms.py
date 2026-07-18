@@ -90,18 +90,18 @@ class ScoreChangeForm(forms.Form):
         ),
     )
     reason = forms.CharField(
-        label="이유",
+        label="이유 (선택)",
         max_length=200,
+        required=False,
         strip=True,
         error_messages={
-            "required": "변경 이유를 입력해 주세요.",
             "max_length": "변경 이유는 200자 이하여야 합니다.",
         },
         widget=forms.Textarea(
             attrs={
                 "rows": "3",
                 "maxlength": "200",
-                "placeholder": "왜 점수를 바꾸고 싶은지 적어 주세요.",
+                "placeholder": "남기고 싶은 이유가 있다면 적어 주세요.",
             }
         ),
     )

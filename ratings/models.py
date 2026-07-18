@@ -81,7 +81,7 @@ class ScoreChange(models.Model):
         related_name="score_changes",
     )
     delta = models.SmallIntegerField()
-    reason = models.CharField(max_length=200)
+    reason = models.CharField(max_length=200, blank=True)
     resulting_score = models.PositiveSmallIntegerField()
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
 

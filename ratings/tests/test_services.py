@@ -50,9 +50,15 @@ class ChangeRelationshipScoreTests(TestCase):
         self.assertEqual(self.score.value, 0)
         self.assertFalse(ScoreChange.objects.exists())
 
-    def test_reason_is_required(self):
-        with self.assertRaisesMessage(ValidationError, "이유를 입력"):
-            change_relationship_score(rater=self.first, delta=1, reason="   ")
+    def test_reason_is_optional(self):
+        change = change_relationship_score(rater=self.first, delta=1)
+
+        self.assertEqual(change.reason, "")
+
+    def test_blank_reason_is_normalized(self):
+        change = change_relationship_score(rater=self.first, delta=1, reason="   ")
+
+        self.assertEqual(change.reason, "")
 
     def test_delta_must_be_non_zero_integer(self):
         with self.assertRaisesMessage(ValidationError, "0이 아닌 정수"):
