@@ -8,7 +8,52 @@
 <body>
     <main>
         <h1>안녕하세요, {{ participant.display_name }}!</h1>
-        <p>친밀도 화면을 준비하고 있어요.</p>
+
+        {% if messages %}
+            <ul>
+                {% for message in messages %}<li>{{ message }}</li>{% endfor %}
+            </ul>
+        {% endif %}
+
+        <section aria-labelledby="scores-title">
+            <h2 id="scores-title">우리의 친밀도</h2>
+            {% for score in scores %}
+                <article>
+                    <p>{{ score.rater.display_name }} → {{ score.recipient.display_name }}</p>
+                    <strong>{{ score.value }}점</strong>
+                </article>
+            {% endfor %}
+        </section>
+
+        <section aria-labelledby="change-title">
+            <h2 id="change-title">{{ own_score.recipient.display_name }}에게 느끼는 친밀도 변경</h2>
+            <form method="post" action="{% url 'change-score' %}" novalidate>
+                {% csrf_token %}
+                {{ score_form.non_field_errors }}
+
+                <fieldset>
+                    <legend>{{ score_form.operation.label }}</legend>
+                    {{ score_form.operation }}
+                    {{ score_form.operation.errors }}
+                </fieldset>
+
+                <div>
+                    <label for="{{ score_form.amount.id_for_label }}">{{ score_form.amount.label }}</label>
+                    {{ score_form.amount }}
+                    {{ score_form.amount.errors }}
+                </div>
+
+                <div>
+                    <label for="{{ score_form.reason.id_for_label }}">{{ score_form.reason.label }}</label>
+                    {{ score_form.reason }}
+                    {{ score_form.reason.errors }}
+                </div>
+
+                <button type="submit">변경하기</button>
+            </form>
+        </section>
+
+        <p><a href="{% url 'history' %}">전체 변경 기록 보기</a></p>
         <form method="post" action="{% url 'logout' %}">
             {% csrf_token %}
             <button type="submit">로그아웃</button>

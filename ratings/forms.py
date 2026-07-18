@@ -60,3 +60,54 @@ class PinLoginForm(forms.Form):
 
         self.authenticated_user = user
         return cleaned_data
+
+
+class ScoreChangeForm(forms.Form):
+    class Operation:
+        INCREASE = "increase"
+        DECREASE = "decrease"
+
+    operation = forms.ChoiceField(
+        label="변경 방향",
+        choices=(
+            (Operation.INCREASE, "올리기"),
+            (Operation.DECREASE, "내리기"),
+        ),
+        widget=forms.RadioSelect,
+    )
+    amount = forms.IntegerField(
+        label="변경할 점수",
+        min_value=1,
+        max_value=100,
+        widget=forms.NumberInput(
+            attrs={
+                "inputmode": "numeric",
+                "min": "1",
+                "max": "100",
+                "placeholder": "점수 입력",
+            }
+        ),
+    )
+    reason = forms.CharField(
+        label="이유",
+        max_length=200,
+        strip=True,
+        error_messages={
+            "required": "변경 이유를 입력해 주세요.",
+            "max_length": "변경 이유는 200자 이하여야 합니다.",
+        },
+        widget=forms.Textarea(
+            attrs={
+                "rows": "3",
+                "maxlength": "200",
+                "placeholder": "왜 점수를 바꾸고 싶은지 적어 주세요.",
+            }
+        ),
+    )
+
+    @property
+    def delta(self):
+        amount = self.cleaned_data["amount"]
+        if self.cleaned_data["operation"] == self.Operation.DECREASE:
+            return -amount
+        return amount

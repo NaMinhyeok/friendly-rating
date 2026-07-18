@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>변경 기록 · Friendly Rating</title>
+</head>
+<body>
+    <main>
+        <header>
+            <a href="{% url 'home' %}">홈으로</a>
+            <h1>친밀도 변경 기록</h1>
+        </header>
+
+        {% if page.object_list %}
+            <ol>
+                {% for change in page %}
+                    <li>
+                        <p>{{ change.score.rater.display_name }} → {{ change.score.recipient.display_name }}</p>
+                        <strong>
+                            {% if change.delta > 0 %}+{% endif %}{{ change.delta }}점
+                        </strong>
+                        <p>변경자 {{ change.changed_by.display_name }}</p>
+                        <p>{{ change.reason }}</p>
+                        <p>변경 후 {{ change.resulting_score }}점</p>
+                        <time datetime="{{ change.created_at|date:'c' }}">
+                            {{ change.created_at|date:"Y.m.d H:i" }}
+                        </time>
+                    </li>
+                {% endfor %}
+            </ol>
+        {% else %}
+            <p>아직 변경 기록이 없어요.</p>
+        {% endif %}
+
+        {% if page.paginator.num_pages > 1 %}
+            <nav aria-label="변경 기록 페이지">
+                {% if page.has_previous %}
+                    <a href="?page={{ page.previous_page_number }}">이전</a>
+                {% endif %}
+                <span>{{ page.number }} / {{ page.paginator.num_pages }}</span>
+                {% if page.has_next %}
+                    <a href="?page={{ page.next_page_number }}">다음</a>
+                {% endif %}
+            </nav>
+        {% endif %}
+    </main>
+</body>
+</html>
