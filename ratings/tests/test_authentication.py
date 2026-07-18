@@ -9,7 +9,6 @@ from django.urls import reverse
 
 from ratings.models import Participant, RelationshipScore
 
-
 PARTICIPANT_ENV = {
     "PARTICIPANT_1_NAME": "민수",
     "PARTICIPANT_1_PIN": "1234",
@@ -27,7 +26,9 @@ class ProvisionParticipantsCommandTests(TestCase):
         self.run_command()
 
         participants = list(Participant.objects.select_related("user"))
-        self.assertEqual([participant.display_name for participant in participants], ["민수", "지수"])
+        self.assertEqual(
+            [participant.display_name for participant in participants], ["민수", "지수"]
+        )
         self.assertEqual(RelationshipScore.objects.count(), 2)
         self.assertTrue(participants[0].user.check_password("1234"))
         self.assertTrue(participants[1].user.check_password("5678"))
@@ -40,7 +41,12 @@ class ProvisionParticipantsCommandTests(TestCase):
         self.run_command()
 
         self.assertEqual(Participant.objects.count(), 2)
-        self.assertEqual(get_user_model().objects.filter(username__startswith="participant-").count(), 2)
+        self.assertEqual(
+            get_user_model()
+            .objects.filter(username__startswith="participant-")
+            .count(),
+            2,
+        )
         self.assertEqual(RelationshipScore.objects.count(), 2)
         user.refresh_from_db()
         self.assertEqual(user.password, original_password_hash)
@@ -91,7 +97,7 @@ class PinLoginTests(TestCase):
     def test_anonymous_user_is_redirected_to_login(self):
         response = self.client.get(reverse("home"))
 
-        self.assertRedirects(response, f'{reverse("login")}?next={reverse("home")}')
+        self.assertRedirects(response, f"{reverse('login')}?next={reverse('home')}")
 
     def test_logout_requires_post_and_clears_session(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)

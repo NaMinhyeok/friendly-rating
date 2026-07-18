@@ -1,0 +1,33 @@
+[project]
+name = "friendly-rating"
+version = "0.1.0"
+description = "A private relationship rating app for two participants"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "Django==5.2.16",
+    "dj-database-url==3.1.2",
+    "firebase-admin==7.5.0",
+    "gunicorn==23.0.0",
+    "psycopg[binary]==3.3.4",
+    "whitenoise==6.12.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff==0.15.22",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+extend-exclude = ["ratings/migrations"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B", "DJ"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

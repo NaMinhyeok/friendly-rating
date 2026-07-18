@@ -12,7 +12,6 @@ from ratings.services import change_relationship_score
 
 from .factories import create_participant_pair
 
-
 VALID_FID = "c12345678901234567890A"
 SECOND_FID = "d12345678901234567890B"
 
@@ -254,9 +253,7 @@ class FirebaseConfigurationTests(TestCase):
     @override_settings(
         PUSH_NOTIFICATIONS_ENABLED=True,
         FIREBASE_WEB_CONFIG={"projectId": "web-project"},
-        FIREBASE_SERVICE_ACCOUNT_JSON=json.dumps(
-            {"project_id": "different-project"}
-        ),
+        FIREBASE_SERVICE_ACCOUNT_JSON=json.dumps({"project_id": "different-project"}),
     )
     def test_mismatched_service_account_project_is_rejected(self):
         with self.assertLogs("ratings.notifications", level="ERROR"):

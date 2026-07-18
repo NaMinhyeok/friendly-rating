@@ -2,12 +2,11 @@ import json
 import re
 
 from django.conf import settings
+from django.contrib import messages
 from django.contrib.auth import login as auth_login
 from django.contrib.auth import logout as auth_logout
 from django.contrib.auth.decorators import login_required
-from django.contrib import messages
-from django.core.exceptions import PermissionDenied
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.core.paginator import Paginator
 from django.db import transaction
 from django.http import HttpResponse, JsonResponse
@@ -20,7 +19,6 @@ from django.views.decorators.http import require_GET, require_POST
 from .forms import PinLoginForm, ScoreChangeForm
 from .models import Participant, PushDevice, RelationshipScore, ScoreChange
 from .services import change_relationship_score
-
 
 FID_PATTERN = re.compile(r"^[cdef][A-Za-z0-9_-]{21}$")
 MAX_PUSH_DEVICES_PER_PARTICIPANT = 5
@@ -236,9 +234,7 @@ def unregister_push_device(request):
 @require_GET
 def service_worker(request):
     firebase_config = (
-        settings.FIREBASE_WEB_CONFIG
-        if settings.PUSH_NOTIFICATIONS_AVAILABLE
-        else {}
+        settings.FIREBASE_WEB_CONFIG if settings.PUSH_NOTIFICATIONS_AVAILABLE else {}
     )
     response = render(
         request,

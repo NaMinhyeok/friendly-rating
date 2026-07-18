@@ -23,9 +23,7 @@ class Command(BaseCommand):
             if len(name) > 30:
                 raise CommandError("참가자 이름은 30자 이하여야 합니다.")
             if not re.fullmatch(r"\d{4}", pin):
-                raise CommandError(
-                    f"PARTICIPANT_{slot}_PIN은 숫자 4자리여야 합니다."
-                )
+                raise CommandError(f"PARTICIPANT_{slot}_PIN은 숫자 4자리여야 합니다.")
             specifications.append((slot, name, pin))
 
         if specifications[0][1] == specifications[1][1]:

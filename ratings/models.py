@@ -120,6 +120,10 @@ class ScoreChange(models.Model):
             ),
         ]
 
+    def __str__(self):
+        sign = "+" if self.delta > 0 else ""
+        return f"{self.changed_by}: {sign}{self.delta} → {self.resulting_score}"
+
     def save(self, *args, **kwargs):
         if self.pk is not None:
             raise ValidationError("점수 변경 기록은 수정할 수 없습니다.")
@@ -127,7 +131,3 @@ class ScoreChange(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("점수 변경 기록은 삭제할 수 없습니다.")
-
-    def __str__(self):
-        sign = "+" if self.delta > 0 else ""
-        return f"{self.changed_by}: {sign}{self.delta} → {self.resulting_score}"

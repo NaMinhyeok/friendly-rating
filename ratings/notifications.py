@@ -10,7 +10,6 @@ from firebase_admin import credentials, messaging
 
 from .models import PushDevice
 
-
 logger = logging.getLogger(__name__)
 
 _FIREBASE_APP_NAME = "woorisai-push"
@@ -75,7 +74,7 @@ def _notification_webpush_config():
 def _deactivate_invalid_devices(devices, responses):
     invalid_device_ids = [
         device_id
-        for (device_id, _), response in zip(devices, responses)
+        for (device_id, _), response in zip(devices, responses, strict=True)
         if not response.success
         and isinstance(
             response.exception,

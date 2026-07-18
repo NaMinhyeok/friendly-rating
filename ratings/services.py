@@ -7,7 +7,6 @@ from django.db import transaction
 from .models import Participant, RelationshipScore, ScoreChange
 from .notifications import send_score_change_notification
 
-
 logger = logging.getLogger(__name__)
 
 

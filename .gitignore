@@ -12,6 +12,7 @@ staticfiles/
 .coverage
 htmlcov/
 .pytest_cache/
+.ruff_cache/
 firebase-debug.log*
 .firebase/
 *-firebase-adminsdk-*.json

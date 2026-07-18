@@ -159,5 +159,5 @@ class ScoreHistoryTests(TestCase):
 
         self.assertRedirects(
             response,
-            f'{reverse("login")}?next={reverse("history")}',
+            f"{reverse('login')}?next={reverse('history')}",
         )

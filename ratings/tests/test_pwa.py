@@ -52,7 +52,7 @@ class PwaPageTests(TestCase):
 
         self.assertContains(response, 'rel="manifest"')
         self.assertContains(response, 'rel="apple-touch-icon"')
-        self.assertContains(response, 'apple-mobile-web-app-capable')
+        self.assertContains(response, "apple-mobile-web-app-capable")
 
     def test_notification_client_is_hidden_when_push_is_unavailable(self):
         response = self.client.get(reverse("home"))
