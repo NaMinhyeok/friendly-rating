@@ -1,11 +1,11 @@
 import logging
 from functools import partial
 
-from django.core.exceptions import ValidationError
 from django.db import transaction
 
 from .models import Participant, RelationshipScore, ScoreChange
 from .notifications import send_score_change_notification
+from .score_rules import calculate_resulting_score, prepare_score_change
 
 logger = logging.getLogger(__name__)
 
@@ -27,22 +27,15 @@ def change_relationship_score(
     delta: int,
     reason: str = "",
 ) -> ScoreChange:
-    if isinstance(delta, bool) or not isinstance(delta, int) or delta == 0:
-        raise ValidationError("변경 점수는 0이 아닌 정수여야 합니다.")
-
-    if not isinstance(reason, str):
-        raise ValidationError("변경 이유는 문자열이어야 합니다.")
-
-    normalized_reason = reason.strip()
-    if len(normalized_reason) > 200:
-        raise ValidationError("변경 이유는 200자 이하여야 합니다.")
+    prepared_change = prepare_score_change(delta=delta, reason=reason)
 
     relationship_score = RelationshipScore.objects.select_for_update().get(
         source_participant=source_participant
     )
-    resulting_score = relationship_score.current_score + delta
-    if not 0 <= resulting_score <= 100:
-        raise ValidationError("친밀도는 0점보다 낮거나 100점보다 높을 수 없습니다.")
+    resulting_score = calculate_resulting_score(
+        current_score=relationship_score.current_score,
+        change=prepared_change,
+    )
 
     relationship_score.current_score = resulting_score
     relationship_score.save(update_fields=("current_score", "updated_at"))
@@ -50,8 +43,8 @@ def change_relationship_score(
     change = ScoreChange.objects.create(
         relationship_score=relationship_score,
         changed_by=source_participant,
-        delta=delta,
-        reason=normalized_reason,
+        delta=prepared_change.delta,
+        reason=prepared_change.reason,
         resulting_score=resulting_score,
     )
     transaction.on_commit(
