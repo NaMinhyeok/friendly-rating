@@ -34,11 +34,16 @@ class ProvisionParticipantsCommandTests(TestCase):
 
     def test_command_is_idempotent(self):
         self.run_command()
+        user = get_user_model().objects.get(username="participant-1")
+        original_password_hash = user.password
+
         self.run_command()
 
         self.assertEqual(Participant.objects.count(), 2)
         self.assertEqual(get_user_model().objects.filter(username__startswith="participant-").count(), 2)
         self.assertEqual(RelationshipScore.objects.count(), 2)
+        user.refresh_from_db()
+        self.assertEqual(user.password, original_password_hash)
 
     def test_command_rejects_invalid_pin(self):
         invalid_environment = {**PARTICIPANT_ENV, "PARTICIPANT_1_PIN": "12ab"}

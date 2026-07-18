@@ -19,7 +19,8 @@ def env_list(name: str, default: str = "") -> list[str]:
     return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
 
 
-DEBUG = env_bool("DEBUG", default=True)
+IS_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+DEBUG = env_bool("DEBUG", default=not IS_RAILWAY)
 
 SECRET_KEY = os.getenv("SECRET_KEY")
 if not SECRET_KEY:
@@ -82,10 +83,14 @@ TEMPLATES = [
 WSGI_APPLICATION = 'config.wsgi.application'
 
 
+database_url = os.getenv("DATABASE_URL")
+if not database_url and not DEBUG:
+    raise ImproperlyConfigured("DATABASE_URL must be set when DEBUG is disabled.")
+
 DATABASES = {
     'default': dj_database_url.config(
         default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
-        conn_max_age=600 if os.getenv("DATABASE_URL") else 0,
+        conn_max_age=600 if database_url else 0,
         conn_health_checks=True,
     )
 }

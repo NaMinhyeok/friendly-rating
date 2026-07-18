@@ -39,7 +39,8 @@ class Command(BaseCommand):
             user.is_active = True
             user.is_staff = False
             user.is_superuser = False
-            user.set_password(pin)
+            if not user.check_password(pin):
+                user.set_password(pin)
             user.save()
 
             participant, _ = Participant.objects.update_or_create(
