@@ -21,6 +21,22 @@ jobs:
       DEBUG: "1"
       SECRET_KEY: django-insecure-ci-only
       PUSH_NOTIFICATIONS_ENABLED: "0"
+      DATABASE_URL: postgresql://friendly_rating:friendly_rating@127.0.0.1:5432/friendly_rating
+
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: friendly_rating
+          POSTGRES_USER: friendly_rating
+          POSTGRES_PASSWORD: friendly_rating
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Check out repository
