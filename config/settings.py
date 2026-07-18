@@ -35,6 +35,8 @@ ALLOWED_HOSTS = env_list(
 CSRF_TRUSTED_ORIGINS = env_list("CSRF_TRUSTED_ORIGINS")
 
 railway_public_domain = os.getenv("RAILWAY_PUBLIC_DOMAIN")
+if IS_RAILWAY:
+    ALLOWED_HOSTS.append("healthcheck.railway.app")
 if railway_public_domain:
     ALLOWED_HOSTS.append(railway_public_domain)
     CSRF_TRUSTED_ORIGINS.append(f"https://{railway_public_domain}")
