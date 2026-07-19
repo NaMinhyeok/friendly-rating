@@ -172,6 +172,7 @@ class ProvisionParticipantsCommandTests(TestCase):
                     "uploader_id",
                     "score_change_id",
                     "comment_id",
+                    "diary_entry_id",
                     "purpose",
                     "kind",
                     "status",
@@ -214,7 +215,7 @@ class ProvisionParticipantsCommandTests(TestCase):
             resulting_score=7,
         )
         second = Participant.objects.get(slot=Participant.Slot.SECOND)
-        DiaryEntry.objects.create(
+        diary_entry = DiaryEntry.objects.create(
             author=first,
             content="보존할 공유 일기",
         )
@@ -254,6 +255,22 @@ class ProvisionParticipantsCommandTests(TestCase):
             expected_size=4_096,
             actual_size=4_096,
             etag="comment-video-etag",
+            expires_at=finalized_at + timedelta(hours=1),
+            finalized_at=finalized_at,
+            position=0,
+        )
+        MediaAttachment.objects.create(
+            uploader=first,
+            diary_entry=diary_entry,
+            purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+            kind=MediaAttachment.Kind.IMAGE,
+            status=MediaAttachment.Status.ATTACHED,
+            object_key="media/provision-diary-image",
+            original_name="일기사진.webp",
+            content_type="image/webp",
+            expected_size=2_048,
+            actual_size=2_048,
+            etag="diary-image-etag",
             expires_at=finalized_at + timedelta(hours=1),
             finalized_at=finalized_at,
             position=0,

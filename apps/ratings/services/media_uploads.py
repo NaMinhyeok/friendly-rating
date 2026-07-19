@@ -4,10 +4,12 @@ import logging
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from functools import partial
 from uuid import UUID, uuid4
 
 from django.conf import settings
 from django.db import transaction
+from django.db.models import Q
 from django.utils import timezone
 
 from ..media_storage import (
@@ -18,7 +20,13 @@ from ..media_storage import (
     StoredMediaObject,
     get_media_storage_gateway,
 )
-from ..models import MediaAttachment, Participant, ScoreChange, ScoreChangeComment
+from ..models import (
+    DiaryEntry,
+    MediaAttachment,
+    Participant,
+    ScoreChange,
+    ScoreChangeComment,
+)
 
 MEBIBYTE = 1024 * 1024
 MAX_IMAGE_SIZE = 10 * MEBIBYTE
@@ -26,6 +34,8 @@ MAX_VIDEO_SIZE = 100 * MEBIBYTE
 MAX_SCORE_CHANGE_ATTACHMENTS = 1
 MAX_COMMENT_IMAGE_ATTACHMENTS = 4
 MAX_COMMENT_VIDEO_ATTACHMENTS = 1
+MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS = 4
+MAX_DIARY_ENTRY_VIDEO_ATTACHMENTS = 1
 MAX_OUTSTANDING_UPLOADS_PER_PARTICIPANT = 20
 MAX_OUTSTANDING_UPLOAD_BYTES_PER_PARTICIPANT = 512 * MEBIBYTE
 FINALIZATION_LEASE_SECONDS = 120
@@ -260,6 +270,12 @@ def _validate_initiation_parent(
         if score_change is not None:
             raise MediaUploadValidationError(
                 "점수 변경 미디어는 점수 변경을 저장할 때 연결해 주세요."
+            )
+        return
+    if purpose == MediaAttachment.Purpose.DIARY_ENTRY:
+        if score_change is not None:
+            raise MediaUploadValidationError(
+                "공유 일기 미디어에는 점수 변경을 지정할 수 없어요."
             )
         return
 
@@ -892,6 +908,166 @@ def attach_comment_media_uploads(
     )
 
 
+def _validate_diary_attachment_group(
+    *,
+    attachments: tuple[MediaAttachment, ...],
+    uploader: Participant,
+    diary_entry: DiaryEntry,
+) -> None:
+    now = timezone.now()
+    for attachment in attachments:
+        if attachment.uploader_id != uploader.pk:
+            raise MediaUploadPermissionError("다른 참가자의 파일은 사용할 수 없어요.")
+        if attachment.purpose != MediaAttachment.Purpose.DIARY_ENTRY:
+            raise MediaUploadValidationError("업로드 용도가 올바르지 않아요.")
+        if attachment.status == MediaAttachment.Status.READY:
+            if attachment.expires_at <= now:
+                raise MediaUploadStateError(
+                    "첨부 준비 시간이 만료된 업로드가 있어요. 다시 선택해 주세요."
+                )
+            if (
+                attachment.score_change_id is not None
+                or attachment.comment_id is not None
+                or attachment.diary_entry_id is not None
+            ):
+                raise MediaUploadValidationError(
+                    "아직 사용하지 않은 공유 일기 파일만 올릴 수 있어요."
+                )
+            continue
+        if attachment.status == MediaAttachment.Status.ATTACHED:
+            if (
+                attachment.diary_entry_id != diary_entry.pk
+                or attachment.score_change_id is not None
+                or attachment.comment_id is not None
+            ):
+                raise MediaUploadValidationError(
+                    "다른 공유 일기에 연결한 파일은 사용할 수 없어요."
+                )
+            continue
+        raise MediaUploadStateError("사용할 준비가 되지 않은 업로드가 있어요.")
+
+    kinds = {attachment.kind for attachment in attachments}
+    if not kinds:
+        return
+    if kinds == {MediaAttachment.Kind.IMAGE}:
+        if len(attachments) > MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS:
+            raise MediaUploadValidationError("이미지는 최대 4장까지 올릴 수 있어요.")
+        return
+    if kinds == {MediaAttachment.Kind.VIDEO}:
+        if len(attachments) > MAX_DIARY_ENTRY_VIDEO_ATTACHMENTS:
+            raise MediaUploadValidationError("영상은 한 개만 올릴 수 있어요.")
+        return
+    raise MediaUploadValidationError("이미지와 영상을 함께 올릴 수 없어요.")
+
+
+def _cleanup_retired_media_uploads_after_commit(
+    upload_ids: tuple[UUID, ...],
+) -> None:
+    from .media_cleanup import cleanup_expired_media_uploads
+
+    try:
+        result = cleanup_expired_media_uploads(
+            limit=len(upload_ids),
+            upload_ids=upload_ids,
+        )
+    except Exception:
+        logger.exception(
+            "Could not start cleanup for retired private diary media.",
+        )
+        return
+    if result.failed:
+        logger.warning(
+            "Some retired private diary media could not be cleaned up.",
+            extra={"failed_count": result.failed},
+        )
+
+
+@transaction.atomic
+def replace_diary_entry_media_uploads(
+    *,
+    upload_ids: Sequence[UUID],
+    uploader: Participant,
+    diary_entry: DiaryEntry,
+) -> tuple[MediaAttachment, ...]:
+    normalized_ids = _normalize_upload_ids(upload_ids)
+    if len(normalized_ids) > MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS:
+        raise MediaUploadValidationError("첨부 파일은 최대 4개까지 올릴 수 있어요.")
+    if diary_entry.pk is None:
+        raise MediaUploadValidationError("저장되지 않은 공유 일기예요.")
+
+    locked_entry = DiaryEntry.objects.select_for_update().get(pk=diary_entry.pk)
+    if locked_entry.author_id != uploader.pk:
+        raise MediaUploadPermissionError("작성자의 파일만 일기에 연결할 수 있어요.")
+
+    candidates = list(
+        MediaAttachment.objects.select_for_update()
+        .filter(
+            Q(pk__in=normalized_ids)
+            | Q(
+                diary_entry_id=locked_entry.pk,
+                status=MediaAttachment.Status.ATTACHED,
+            )
+        )
+        .order_by("pk")
+    )
+    candidates_by_id = {attachment.pk: attachment for attachment in candidates}
+    if any(upload_id not in candidates_by_id for upload_id in normalized_ids):
+        raise MediaUploadNotFoundError("업로드를 찾을 수 없어요.")
+    attachments = tuple(candidates_by_id[upload_id] for upload_id in normalized_ids)
+    _validate_diary_attachment_group(
+        attachments=attachments,
+        uploader=uploader,
+        diary_entry=locked_entry,
+    )
+
+    desired_ids = set(normalized_ids)
+    retired_ids = tuple(
+        attachment.pk
+        for attachment in candidates
+        if attachment.diary_entry_id == locked_entry.pk
+        and attachment.status == MediaAttachment.Status.ATTACHED
+        and attachment.pk not in desired_ids
+    )
+    if retired_ids:
+        MediaAttachment.objects.filter(pk__in=retired_ids).update(
+            diary_entry=None,
+            status=MediaAttachment.Status.DELETING,
+            expires_at=timezone.now(),
+        )
+
+    for position, attachment in enumerate(attachments):
+        update_fields: list[str] = []
+        if attachment.status == MediaAttachment.Status.READY:
+            attachment.diary_entry = locked_entry
+            attachment.status = MediaAttachment.Status.ATTACHED
+            update_fields.extend(("diary_entry", "status"))
+        if attachment.position != position:
+            attachment.position = position
+            update_fields.append("position")
+        if update_fields:
+            attachment.save(update_fields=update_fields)
+
+    if retired_ids:
+        transaction.on_commit(
+            partial(_cleanup_retired_media_uploads_after_commit, retired_ids),
+            robust=True,
+        )
+    return attachments
+
+
+def attach_diary_entry_media_uploads(
+    *,
+    upload_ids: Sequence[UUID],
+    uploader: Participant,
+    diary_entry: DiaryEntry,
+) -> tuple[MediaAttachment, ...]:
+    return replace_diary_entry_media_uploads(
+        upload_ids=upload_ids,
+        uploader=uploader,
+        diary_entry=diary_entry,
+    )
+
+
 def generate_media_download_url(
     *,
     attachment: MediaAttachment,
@@ -900,11 +1076,19 @@ def generate_media_download_url(
 ) -> str:
     if attachment.status != MediaAttachment.Status.ATTACHED:
         raise MediaUploadNotFoundError("미디어를 찾을 수 없어요.")
-    score_change = attachment.score_change
-    if score_change is None or not _participant_can_access_score_change(
-        participant=participant,
-        score_change=score_change,
-    ):
+    if attachment.purpose == MediaAttachment.Purpose.DIARY_ENTRY:
+        can_access = (
+            attachment.diary_entry_id is not None
+            and participant.pk is not None
+            and Participant.objects.filter(pk=participant.pk).exists()
+        )
+    else:
+        score_change = attachment.score_change
+        can_access = score_change is not None and _participant_can_access_score_change(
+            participant=participant,
+            score_change=score_change,
+        )
+    if not can_access:
         raise MediaUploadPermissionError("이 미디어를 볼 수 없어요.")
 
     expires_in = _positive_setting("MEDIA_DOWNLOAD_URL_TTL_SECONDS", 300)
@@ -932,6 +1116,8 @@ __all__ = (
     "InitiatedMediaUpload",
     "MAX_COMMENT_IMAGE_ATTACHMENTS",
     "MAX_COMMENT_VIDEO_ATTACHMENTS",
+    "MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS",
+    "MAX_DIARY_ENTRY_VIDEO_ATTACHMENTS",
     "MAX_IMAGE_SIZE",
     "MAX_OUTSTANDING_UPLOAD_BYTES_PER_PARTICIPANT",
     "MAX_OUTSTANDING_UPLOADS_PER_PARTICIPANT",
@@ -945,6 +1131,7 @@ __all__ = (
     "MediaUploadStorageError",
     "MediaUploadValidationError",
     "attach_comment_media_uploads",
+    "attach_diary_entry_media_uploads",
     "attach_media_uploads",
     "attach_score_change_media_uploads",
     "complete_media_upload",
@@ -954,4 +1141,5 @@ __all__ = (
     "finalize_media_upload",
     "generate_media_download_url",
     "initiate_media_upload",
+    "replace_diary_entry_media_uploads",
 )
