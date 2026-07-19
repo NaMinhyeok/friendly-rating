@@ -21,6 +21,10 @@ from ..services.media_cleanup import (
     ExpiredMediaCleanupResult,
     cleanup_expired_media_uploads,
 )
+from ..services.media_uploads import (
+    FINALIZATION_LEASE_SECONDS,
+    discard_media_upload,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -311,6 +315,55 @@ def test_partial_finalizing_cleanup_resumes_from_its_deleting_tombstone(
         token_key,
     ]
     assert not MediaAttachment.objects.filter(pk=attachment.pk).exists()
+
+
+def test_cleanup_finish_preserves_a_newer_discard_grace(participant_pair):
+    cutoff = timezone.now()
+    attachment = _create_attachment(
+        uploader=participant_pair.first,
+        status=MediaAttachment.Status.FINALIZING,
+        expires_at=cutoff - timedelta(seconds=1),
+        suffix="cleanup-discard-race",
+    )
+    assert attachment.finalization_token is not None
+    token_key = f"media/{attachment.pk}/{attachment.finalization_token}"
+    discard_storage = FakeMediaStorage()
+
+    class DiscardDuringCleanupStorage(FakeMediaStorage):
+        did_discard = False
+
+        def delete_object(self, *, object_key: str) -> None:
+            super().delete_object(object_key=object_key)
+            if self.did_discard:
+                return
+            self.did_discard = True
+            discard_media_upload(
+                upload_id=attachment.pk,
+                uploader=participant_pair.first,
+                storage=discard_storage,
+            )
+
+    cleanup_storage = DiscardDuringCleanupStorage()
+    discard_started_before = timezone.now()
+
+    result = cleanup_expired_media_uploads(
+        cutoff=cutoff,
+        storage=cleanup_storage,
+    )
+
+    assert result == ExpiredMediaCleanupResult(scanned=1, deleted=0, failed=0)
+    attachment.refresh_from_db()
+    assert attachment.status == MediaAttachment.Status.DELETING
+    assert attachment.finalization_token is not None
+    assert attachment.expires_at >= discard_started_before + timedelta(
+        seconds=FINALIZATION_LEASE_SECONDS
+    )
+    assert cleanup_storage.deletion_requests == [attachment.object_key, token_key]
+    assert discard_storage.deletion_requests == [
+        f"pending/{attachment.pk}",
+        attachment.object_key,
+        token_key,
+    ]
 
 
 def test_cleanup_does_not_delete_r2_when_tombstone_write_fails(

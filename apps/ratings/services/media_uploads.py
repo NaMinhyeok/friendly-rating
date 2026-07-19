@@ -105,6 +105,7 @@ class _CompletionClaim:
 class _DiscardClaim:
     upload_id: UUID
     uploader_id: int
+    finalization_token: UUID | None
     object_keys: tuple[str, ...]
 
 
@@ -515,15 +516,29 @@ def _start_reclaimed_claim(
     )
 
 
-def _restore_pending_status(*, upload_id: UUID, claim_token: UUID) -> None:
-    MediaAttachment.objects.filter(
-        pk=upload_id,
-        status=MediaAttachment.Status.FINALIZING,
-        finalization_token=claim_token,
-    ).update(
-        status=MediaAttachment.Status.PENDING,
-        finalization_token=None,
-    )
+@transaction.atomic(durable=True)
+def _acknowledge_failed_finalization_cleanup(
+    *,
+    upload_id: UUID,
+    claim_token: UUID,
+) -> None:
+    try:
+        attachment = MediaAttachment.objects.select_for_update().get(
+            pk=upload_id,
+            finalization_token=claim_token,
+        )
+    except MediaAttachment.DoesNotExist:
+        return
+
+    if attachment.status == MediaAttachment.Status.FINALIZING:
+        attachment.status = MediaAttachment.Status.PENDING
+        attachment.finalization_token = None
+        attachment.save(update_fields=("status", "finalization_token"))
+        return
+    if attachment.status == MediaAttachment.Status.DELETING:
+        # A discard keeps this token as a durable coordination tombstone until
+        # its finalizer proves that the immutable claim object is gone.
+        attachment.delete()
 
 
 def _validate_stored_object(
@@ -581,13 +596,18 @@ def _clean_up_failed_finalization(
     upload_id: UUID,
     claim_token: UUID,
     final_key: str,
+    can_acknowledge_claim: bool,
 ) -> None:
-    if _delete_final_object_if_unreferenced(
+    object_is_clean = _delete_final_object_if_unreferenced(
         storage=storage,
         upload_id=upload_id,
         object_key=final_key,
-    ):
-        _restore_pending_status(upload_id=upload_id, claim_token=claim_token)
+    )
+    if object_is_clean and can_acknowledge_claim:
+        _acknowledge_failed_finalization_cleanup(
+            upload_id=upload_id,
+            claim_token=claim_token,
+        )
 
 
 @transaction.atomic(durable=True)
@@ -676,6 +696,7 @@ def complete_media_upload(
         raise RuntimeError("A finalizing media upload has no claim token.")
     pending_key = attachment.object_key
     final_key = f"media/{attachment.pk}/{claim_token}"
+    promotion_may_still_finish = False
     try:
         pending_object = storage_gateway.inspect_object(
             object_key=pending_key,
@@ -684,12 +705,16 @@ def complete_media_upload(
             attachment=attachment,
             stored_object=pending_object,
         )
+        # A raised copy call is outcome-ambiguous: R2 may still finish it, so
+        # its token cannot be acknowledged until the lease cleanup retries.
+        promotion_may_still_finish = True
         storage_gateway.promote_object(
             source_key=pending_key,
             destination_key=final_key,
             content_type=attachment.content_type,
             original_name=attachment.original_name,
         )
+        promotion_may_still_finish = False
         # A presigned PUT remains reusable until expiry. Validate the immutable
         # destination again after the copy so a concurrent overwrite of the
         # pending key cannot turn unverified bytes into accepted media.
@@ -704,6 +729,7 @@ def complete_media_upload(
             upload_id=upload_id,
             claim_token=claim_token,
             final_key=final_key,
+            can_acknowledge_claim=not promotion_may_still_finish,
         )
         raise MediaUploadStateError("업로드된 파일을 찾을 수 없어요.") from error
     except MediaStorageError as error:
@@ -712,6 +738,7 @@ def complete_media_upload(
             upload_id=upload_id,
             claim_token=claim_token,
             final_key=final_key,
+            can_acknowledge_claim=not promotion_may_still_finish,
         )
         raise MediaUploadStorageError("업로드된 파일을 확인하지 못했어요.") from error
     except MediaUploadError:
@@ -720,6 +747,7 @@ def complete_media_upload(
             upload_id=upload_id,
             claim_token=claim_token,
             final_key=final_key,
+            can_acknowledge_claim=not promotion_may_still_finish,
         )
         raise
     except Exception as error:
@@ -728,6 +756,7 @@ def complete_media_upload(
             upload_id=upload_id,
             claim_token=claim_token,
             final_key=final_key,
+            can_acknowledge_claim=not promotion_may_still_finish,
         )
         raise MediaUploadStorageError("업로드된 파일을 확인하지 못했어요.") from error
 
@@ -745,6 +774,7 @@ def complete_media_upload(
             upload_id=upload_id,
             claim_token=claim_token,
             final_key=final_key,
+            can_acknowledge_claim=True,
         )
         raise
 
@@ -759,11 +789,11 @@ def _claim_media_upload_discard(
     *,
     upload_id: UUID,
     uploader: Participant,
-) -> _DiscardClaim:
+) -> _DiscardClaim | None:
     try:
         attachment = MediaAttachment.objects.select_for_update().get(pk=upload_id)
-    except MediaAttachment.DoesNotExist as error:
-        raise MediaUploadNotFoundError("업로드를 찾을 수 없어요.") from error
+    except MediaAttachment.DoesNotExist:
+        return None
 
     if uploader.pk is None or attachment.uploader_id != uploader.pk:
         raise MediaUploadPermissionError("이 업로드를 폐기할 수 없어요.")
@@ -782,13 +812,15 @@ def _claim_media_upload_discard(
     # longer mark its claim READY, while a failed object delete remains
     # discoverable through the row for an idempotent retry.
     discard_started_at = timezone.now()
-    if (
-        attachment.status != MediaAttachment.Status.DELETING
-        or attachment.expires_at > discard_started_at
-    ):
-        attachment.status = MediaAttachment.Status.DELETING
-        attachment.expires_at = discard_started_at
-        attachment.save(update_fields=("status", "expires_at"))
+    finalization_token = attachment.finalization_token
+    discard_expires_at = discard_started_at
+    if finalization_token is not None:
+        discard_expires_at = discard_started_at + timedelta(
+            seconds=FINALIZATION_LEASE_SECONDS
+        )
+    attachment.status = MediaAttachment.Status.DELETING
+    attachment.expires_at = discard_expires_at
+    attachment.save(update_fields=("status", "expires_at"))
 
     object_keys = [f"pending/{attachment.pk}", attachment.object_key]
     if attachment.finalization_token is not None:
@@ -796,6 +828,7 @@ def _claim_media_upload_discard(
     return _DiscardClaim(
         upload_id=attachment.pk,
         uploader_id=attachment.uploader_id,
+        finalization_token=finalization_token,
         object_keys=tuple(dict.fromkeys(object_keys)),
     )
 
@@ -807,6 +840,7 @@ def _finish_media_upload_discard(*, claim: _DiscardClaim) -> None:
             pk=claim.upload_id,
             uploader_id=claim.uploader_id,
             status=MediaAttachment.Status.DELETING,
+            finalization_token__isnull=True,
         )
     except MediaAttachment.DoesNotExist:
         # Another retry may already have removed the same tombstone.
@@ -820,15 +854,17 @@ def discard_media_upload(
     uploader: Participant,
     storage: MediaStorageGateway | None = None,
 ) -> None:
-    try:
-        storage_gateway = storage or get_media_storage_gateway()
-    except Exception as error:
-        raise MediaUploadStorageError("파일 저장소에 연결하지 못했어요.") from error
-
     claim = _claim_media_upload_discard(
         upload_id=upload_id,
         uploader=uploader,
     )
+    if claim is None:
+        return
+
+    try:
+        storage_gateway = storage or get_media_storage_gateway()
+    except Exception as error:
+        raise MediaUploadStorageError("파일 저장소에 연결하지 못했어요.") from error
     deletion_failed = False
     for object_key in claim.object_keys:
         try:
@@ -842,7 +878,8 @@ def discard_media_upload(
     if deletion_failed:
         raise MediaUploadStorageError("업로드된 파일을 정리하지 못했어요.")
 
-    _finish_media_upload_discard(claim=claim)
+    if claim.finalization_token is None:
+        _finish_media_upload_discard(claim=claim)
 
 
 def _normalize_upload_ids(upload_ids: Sequence[UUID]) -> tuple[UUID, ...]:

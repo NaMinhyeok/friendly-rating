@@ -33,6 +33,7 @@ class ExpiredMediaCleanupResult:
 @dataclass(frozen=True, slots=True)
 class _ExpiredMediaCleanupClaim:
     upload_id: UUID
+    expires_at: datetime
     object_keys: tuple[str, ...]
 
 
@@ -79,16 +80,18 @@ def _claim_expired_media_cleanup(
             object_keys.append(token_key)
     return _ExpiredMediaCleanupClaim(
         upload_id=attachment.pk,
+        expires_at=attachment.expires_at,
         object_keys=tuple(object_keys),
     )
 
 
 @transaction.atomic(durable=True)
-def _finish_expired_media_cleanup(*, upload_id: UUID) -> bool:
+def _finish_expired_media_cleanup(*, claim: _ExpiredMediaCleanupClaim) -> bool:
     try:
         attachment = MediaAttachment.objects.select_for_update().get(
-            pk=upload_id,
+            pk=claim.upload_id,
             status=MediaAttachment.Status.DELETING,
+            expires_at=claim.expires_at,
         )
     except MediaAttachment.DoesNotExist:
         return False
@@ -135,7 +138,7 @@ def cleanup_expired_media_uploads(
                 continue
             for object_key in claim.object_keys:
                 storage_gateway.delete_object(object_key=object_key)
-            if _finish_expired_media_cleanup(upload_id=claim.upload_id):
+            if _finish_expired_media_cleanup(claim=claim):
                 deleted += 1
         except Exception:
             failed += 1

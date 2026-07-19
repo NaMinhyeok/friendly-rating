@@ -292,6 +292,20 @@ def test_uploader_discards_an_unattached_private_upload(participant_pair, settin
             csrf_token=csrf_token,
         )
 
+    with patch(
+        "apps.ratings.services.media_uploads.get_media_storage_gateway",
+        side_effect=AssertionError("A missing retry must not configure storage."),
+    ):
+        repeated_response = _post_json(
+            client,
+            reverse(
+                "api-v1:media-upload-discard",
+                kwargs={"upload_id": attachment.pk},
+            ),
+            {},
+            csrf_token=csrf_token,
+        )
+
     assert response.status_code == 200
     assert response.headers["Cache-Control"] == "private, no-store"
     assert response.json() == {
@@ -301,6 +315,8 @@ def test_uploader_discards_an_unattached_private_upload(participant_pair, settin
     }
     assert not MediaAttachment.objects.filter(pk=attachment.pk).exists()
     assert storage.deletion_requests == [f"pending/{attachment.pk}"]
+    assert repeated_response.status_code == 200
+    assert repeated_response.json() == response.json()
 
 
 def test_only_the_uploader_can_discard_an_upload(participant_pair, settings):
@@ -342,6 +358,51 @@ def test_only_the_uploader_can_discard_an_upload(participant_pair, settings):
     attachment.refresh_from_db()
     assert attachment.status == MediaAttachment.Status.PENDING
     assert storage.deletion_requests == []
+
+
+def test_discard_refuses_an_already_attached_upload(participant_pair, settings):
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    change = _create_change(participant_pair)
+    attachment = MediaAttachment.objects.create(
+        uploader=participant_pair.first,
+        score_change=change,
+        purpose=MediaAttachment.Purpose.SCORE_CHANGE,
+        kind=MediaAttachment.Kind.IMAGE,
+        status=MediaAttachment.Status.ATTACHED,
+        object_key="media/discard-attached-api",
+        original_name="attached.jpg",
+        content_type="image/jpeg",
+        expected_size=512,
+        actual_size=512,
+        etag="attached-etag",
+        expires_at=timezone.now() + timedelta(minutes=10),
+        finalized_at=timezone.now(),
+    )
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    with patch(
+        "apps.ratings.services.media_uploads.get_media_storage_gateway",
+        side_effect=AssertionError("Attached discard must not access storage."),
+    ):
+        response = _post_json(
+            client,
+            reverse(
+                "api-v1:media-upload-discard",
+                kwargs={"upload_id": attachment.pk},
+            ),
+            {},
+            csrf_token=csrf_token,
+        )
+
+    _assert_error(
+        response,
+        status_code=409,
+        error_type="CONFLICT",
+        error_code="MEDIA_UPLOAD_CONFLICT",
+    )
+    attachment.refresh_from_db()
+    assert attachment.status == MediaAttachment.Status.ATTACHED
+    assert attachment.score_change == change
 
 
 def test_discard_requires_csrf_without_changing_the_upload(participant_pair, settings):

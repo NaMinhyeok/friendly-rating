@@ -599,7 +599,6 @@ class MediaUploadDiscardView(APIView):
             200: MediaUploadDiscardedSuccessEnvelopeSerializer,
             400: BadRequestErrorEnvelopeSerializer,
             403: MediaForbiddenErrorEnvelopeSerializer,
-            404: NotFoundErrorEnvelopeSerializer,
             406: NotAcceptableErrorEnvelopeSerializer,
             409: MediaUploadConflictErrorEnvelopeSerializer,
             413: RequestBodyTooLargeErrorEnvelopeSerializer,

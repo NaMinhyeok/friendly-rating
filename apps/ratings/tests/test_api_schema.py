@@ -384,7 +384,6 @@ def test_media_upload_operations_declare_direct_upload_lifecycle_contract(client
     shared_error_responses = {
         "400": "BadRequestErrorEnvelope",
         "403": "MediaForbiddenErrorEnvelope",
-        "404": "NotFoundErrorEnvelope",
         "406": "NotAcceptableErrorEnvelope",
         "409": "MediaUploadConflictErrorEnvelope",
         "413": "RequestBodyTooLargeErrorEnvelope",
@@ -393,15 +392,22 @@ def test_media_upload_operations_declare_direct_upload_lifecycle_contract(client
         "503": "MediaUploadsUnavailableErrorEnvelope",
     }
     operation_contracts = (
-        (initiate, "201", "MediaUploadInitiatedSuccessEnvelope"),
-        (complete, "200", "CompletedMediaUploadSuccessEnvelope"),
-        (discard, "200", "MediaUploadDiscardedSuccessEnvelope"),
+        (initiate, "201", "MediaUploadInitiatedSuccessEnvelope", True),
+        (complete, "200", "CompletedMediaUploadSuccessEnvelope", True),
+        (discard, "200", "MediaUploadDiscardedSuccessEnvelope", False),
     )
-    for operation, success_status, success_component in operation_contracts:
+    for (
+        operation,
+        success_status,
+        success_component,
+        includes_not_found,
+    ) in operation_contracts:
         response_components = {
             success_status: success_component,
             **shared_error_responses,
         }
+        if includes_not_found:
+            response_components["404"] = "NotFoundErrorEnvelope"
         assert set(operation["responses"]) == set(response_components)
         for status_code, component_name in response_components.items():
             assert operation["responses"][status_code]["content"]["application/json"][
