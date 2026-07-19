@@ -12,6 +12,12 @@ ERROR_RESPONSE_COMPONENTS = {
     "500": "InternalServerErrorEnvelope",
 }
 
+PUSH_DEVICE_ERROR_RESPONSE_COMPONENTS = {
+    status_code: component_name
+    for status_code, component_name in ERROR_RESPONSE_COMPONENTS.items()
+    if status_code != "409"
+}
+
 ERROR_PAIRS = {
     "BadRequestErrorEnvelope": {
         ("REQUEST", "INVALID_JSON"),
@@ -89,7 +95,13 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
     assert document["openapi"] == "3.1.0"
     assert document["info"]["title"] == "우리 사이 API"
     assert "resultType" not in document
-    assert set(document["paths"]) == {"/api/v1/score-changes/"}
+    assert set(document["paths"]) == {
+        "/api/v1/push-devices/register/",
+        "/api/v1/push-devices/unregister/",
+        "/api/v1/score-changes/",
+    }
+    assert "/notifications/devices/register/" not in document["paths"]
+    assert "/notifications/devices/unregister/" not in document["paths"]
 
 
 def test_score_change_operation_declares_session_csrf_json_and_status_contract(client):
@@ -152,6 +164,101 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
         "in": "cookie",
         "name": "sessionid",
     }
+
+
+def test_push_device_operations_declare_strict_request_and_envelope_contract(client):
+    document = client.get(
+        reverse("api-schema"),
+        HTTP_ACCEPT="application/json",
+    ).json()
+
+    operation_contracts = {
+        "/api/v1/push-devices/register/": (
+            "PushDeviceRegisteredSuccessEnvelope",
+            "PushDeviceRegisteredData",
+            True,
+        ),
+        "/api/v1/push-devices/unregister/": (
+            "PushDeviceUnregisteredSuccessEnvelope",
+            "PushDeviceUnregisteredData",
+            False,
+        ),
+    }
+    for path, (
+        success_component_name,
+        data_component_name,
+        registered_value,
+    ) in operation_contracts.items():
+        operation = document["paths"][path]["post"]
+        assert operation["security"] == [{"cookieAuth": []}]
+        csrf_parameter = next(
+            parameter
+            for parameter in operation["parameters"]
+            if parameter["name"] == "X-CSRFToken"
+        )
+        assert csrf_parameter["in"] == "header"
+        assert csrf_parameter["required"] is True
+
+        request_body = operation["requestBody"]
+        assert request_body["required"] is True
+        assert set(request_body["content"]) == {"application/json"}
+        request_schema = _resolve_schema(
+            document,
+            request_body["content"]["application/json"]["schema"],
+        )
+        assert request_schema == {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "fid": {
+                    "type": "string",
+                    "minLength": 22,
+                    "maxLength": 22,
+                    "pattern": "^[cdef][A-Za-z0-9_-]{21}$",
+                },
+            },
+            "required": ["fid"],
+        }
+
+        responses = operation["responses"]
+        assert set(responses) == {
+            "200",
+            *PUSH_DEVICE_ERROR_RESPONSE_COMPONENTS,
+        }
+        assert responses["200"]["content"]["application/json"]["schema"] == {
+            "$ref": f"#/components/schemas/{success_component_name}"
+        }
+        for (
+            status_code,
+            component_name,
+        ) in PUSH_DEVICE_ERROR_RESPONSE_COMPONENTS.items():
+            assert responses[status_code]["content"]["application/json"]["schema"] == {
+                "$ref": f"#/components/schemas/{component_name}"
+            }
+
+        success_envelope = document["components"]["schemas"][success_component_name]
+        assert set(success_envelope["required"]) == {
+            "resultType",
+            "error",
+            "success",
+        }
+        assert _enum_values(
+            document,
+            success_envelope["properties"]["resultType"],
+        ) == ["SUCCESS"]
+        assert _schema_types(
+            document,
+            success_envelope["properties"]["error"],
+        ) == {"null"}
+        assert success_envelope["properties"]["success"] == {
+            "$ref": f"#/components/schemas/{data_component_name}"
+        }
+
+        data_schema = document["components"]["schemas"][data_component_name]
+        assert data_schema["required"] == ["registered"]
+        assert set(data_schema["properties"]) == {"registered"}
+        assert data_schema["properties"]["registered"]["type"] == "boolean"
+        assert data_schema["properties"]["registered"]["const"] is registered_value
 
 
 def test_openapi_envelopes_are_exclusive_and_fields_match_runtime_contract(client):

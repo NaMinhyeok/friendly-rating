@@ -84,6 +84,22 @@ def test_notification_client_receives_only_public_configuration(
 
     assertContains(response, "data-notification-settings")
     assertContains(response, "ratings/notifications.js")
+    assertContains(
+        response,
+        'data-register-url="/api/v1/push-devices/register/"',
+    )
+    assertContains(
+        response,
+        'data-unregister-url="/api/v1/push-devices/unregister/"',
+    )
+    assertNotContains(
+        response,
+        'data-register-url="/notifications/devices/register/"',
+    )
+    assertNotContains(
+        response,
+        'data-unregister-url="/notifications/devices/unregister/"',
+    )
     assertContains(response, "test-project")
     assertNotContains(response, "private_key")
 
@@ -94,5 +110,9 @@ def test_notification_client_sends_the_rendered_csrf_token():
 
     source = Path(script_path).read_text()
 
+    assert 'credentials: "same-origin"' in source
     assert '"X-CSRFToken": getCsrfToken()' in source
     assert 'document.querySelector("[name=csrfmiddlewaretoken]")?.value' in source
+    assert 'payload?.resultType !== "SUCCESS"' in source
+    assert "payload?.error !== null" in source
+    assert "payload?.success?.registered !== expectedRegistered" in source

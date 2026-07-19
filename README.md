@@ -63,10 +63,18 @@ templates/
 
 ## JSON API
 
-DRF 기반 API는 `/api/v1/` 아래에 두며 현재 점수 변경 endpoint는
-`POST /api/v1/score-changes/`입니다. 브라우저의 기존 Django 세션을 사용하고,
-변경 요청에는 같은 출처에서 얻은 `X-CSRFToken` 헤더가 필요합니다. 클라이언트가
-참가자 ID를 보내지 않고 로그인한 참가자의 outgoing score만 변경합니다.
+DRF 기반 API는 `/api/v1/` 아래에 둡니다. 현재 endpoint는 다음과 같습니다.
+
+- `POST /api/v1/score-changes/`: 로그인한 참가자의 outgoing score 변경
+- `POST /api/v1/push-devices/register/`: 현재 기기를 푸시 알림 대상으로 등록
+- `POST /api/v1/push-devices/unregister/`: 현재 기기의 푸시 알림 등록 해제
+
+브라우저의 기존 Django 세션을 사용하고, 변경 요청에는 같은 출처에서 얻은
+`X-CSRFToken` 헤더가 필요합니다. 참가자 ID는 요청에서 받지 않고 로그인 세션에서
+결정합니다. 푸시 기기 API는 정확한 형식의 `fid`만 입력받고 성공 시
+`success.registered`로 최종 등록 상태를 반환합니다. 현재 알림 프런트는 이 API를
+사용하며 기존 `/notifications/devices/.../` URL은 이전 클라이언트 호환을 위해 기존
+응답 계약과 함께 유지합니다.
 
 모든 API 응답은 `resultType`, `error`, `success`를 갖는 JSON envelope를 사용합니다.
 성공과 오류 branch는 서로 배타적이며 HTTP 상태 코드를 그대로 유지합니다. 생성된
