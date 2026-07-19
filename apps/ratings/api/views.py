@@ -1,6 +1,7 @@
 from typing import Never, override
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.paginator import EmptyPage, Paginator
 from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
@@ -10,7 +11,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ..models import Participant, RelationshipScore
+from ..models import Participant, RelationshipScore, ScoreChange
 from ..services import (
     change_relationship_score,
     register_participant_push_device,
@@ -21,7 +22,9 @@ from .serializers import (
     BadRequestErrorEnvelopeSerializer,
     ForbiddenErrorEnvelopeSerializer,
     InternalServerErrorEnvelopeSerializer,
+    InvalidInputErrorEnvelopeSerializer,
     NotAcceptableErrorEnvelopeSerializer,
+    NotFoundErrorEnvelopeSerializer,
     PushDeviceRegisteredSuccessEnvelopeSerializer,
     PushDeviceRequestSerializer,
     PushDeviceUnregisteredSuccessEnvelopeSerializer,
@@ -30,6 +33,9 @@ from .serializers import (
     RelationshipScoreListSuccessEnvelopeSerializer,
     RequestBodyTooLargeErrorEnvelopeSerializer,
     ScoreChangeDataSerializer,
+    ScoreChangePageDataSerializer,
+    ScoreChangePageQuerySerializer,
+    ScoreChangePageSuccessEnvelopeSerializer,
     ScoreChangeRequestSerializer,
     ScoreChangeSuccessEnvelopeSerializer,
     ScoreOutOfRangeErrorEnvelopeSerializer,
@@ -43,6 +49,7 @@ CSRF_HEADER_PARAMETER = OpenApiParameter(
     required=True,
     description="렌더링된 페이지 또는 CSRF 쿠키에서 얻은 토큰",
 )
+SCORE_CHANGE_PAGE_SIZE = 20
 
 
 def _participant_for_request(request: Request) -> Participant:
@@ -93,6 +100,67 @@ class RelationshipScoreListView(APIView):
 
 
 class ScoreChangeListView(APIView):
+    @extend_schema(
+        operation_id="listScoreChanges",
+        summary="관계 점수 변경 이력 조회",
+        description=(
+            "두 참가자가 공유하는 양방향 점수 변경 이력을 최신순으로 조회합니다. "
+            "페이지 크기는 20개로 고정됩니다."
+        ),
+        tags=("scoreChanges",),
+        parameters=[ScoreChangePageQuerySerializer],
+        responses={
+            200: ScoreChangePageSuccessEnvelopeSerializer,
+            400: InvalidInputErrorEnvelopeSerializer,
+            403: ReadForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def get(self, request: Request) -> Response:
+        participant = _participant_for_request(request)
+        query_serializer = ScoreChangePageQuerySerializer(
+            data=dict(request.query_params.items())
+        )
+        query_serializer.is_valid(raise_exception=True)
+        page_number = query_serializer.validated_data.get("pageNumber")
+        if not isinstance(page_number, int) or isinstance(page_number, bool):
+            raise RuntimeError("Validated page number is not an integer.")
+
+        changes = (
+            ScoreChange.objects.select_related(
+                "changed_by",
+                "relationship_score__source_participant",
+                "relationship_score__target_participant",
+            )
+            .filter(
+                Q(relationship_score__source_participant=participant)
+                | Q(relationship_score__target_participant=participant),
+            )
+            .order_by("-created_at", "-pk")
+        )
+        paginator = Paginator(changes, SCORE_CHANGE_PAGE_SIZE)
+        try:
+            page = paginator.page(page_number)
+        except EmptyPage as error:
+            raise NotFound() from error
+
+        response_serializer = ScoreChangePageDataSerializer(
+            {
+                "results": list(page.object_list),
+                "paging": {
+                    "pageNumber": page.number,
+                    "pageSize": SCORE_CHANGE_PAGE_SIZE,
+                    "hasNext": page.has_next(),
+                    "totalCount": paginator.count,
+                },
+            }
+        )
+        response = Response(response_serializer.data)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
     @extend_schema(
         operation_id="createScoreChange",
         summary="현재 참가자의 관계 점수 변경",

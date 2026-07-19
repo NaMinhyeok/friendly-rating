@@ -339,12 +339,18 @@ def test_score_change_api_rejects_malformed_json_without_writing(participant_pai
     _assert_no_score_writes(participant_pair)
 
 
-def test_score_change_api_requires_post_without_writing(participant_pair):
-    client, _csrf_token = _participant_client(participant_pair.first)
+def test_score_change_api_rejects_unsupported_method_without_writing(
+    participant_pair,
+):
+    client, csrf_token = _participant_client(participant_pair.first)
 
-    response = client.get(
+    response = client.put(
         reverse("api-v1:score-change-list"),
+        data="{}",
+        content_type="application/json",
         HTTP_ACCEPT="application/json",
+        HTTP_ORIGIN="http://testserver",
+        HTTP_X_CSRFTOKEN=csrf_token,
     )
 
     _assert_error_response(
@@ -353,7 +359,9 @@ def test_score_change_api_requires_post_without_writing(participant_pair):
         error_type="REQUEST",
         error_code="METHOD_NOT_ALLOWED",
     )
+    assert "GET" in response.headers["Allow"]
     assert "POST" in response.headers["Allow"]
+    assert "PUT" not in response.headers["Allow"]
     _assert_no_score_writes(participant_pair)
 
 

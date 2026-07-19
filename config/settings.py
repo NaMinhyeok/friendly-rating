@@ -303,6 +303,7 @@ SPECTACULAR_SETTINGS = {
         "SuccessResultType": ["SUCCESS"],
         "RequestErrorType": ["REQUEST"],
         "AuthenticationErrorType": ["AUTHENTICATION"],
+        "NotFoundValue": ["NOT_FOUND"],
     },
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": r"/api/v1",
