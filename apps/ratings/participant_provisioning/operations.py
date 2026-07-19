@@ -1,6 +1,8 @@
+from typing import cast
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import User
 
 from ..models import Participant, RelationshipScore
 from .contracts import PasswordStatus
@@ -8,7 +10,7 @@ from .inspection import get_password_status
 
 
 def bootstrap_participants(specifications):
-    user_model = get_user_model()
+    user_model = cast(type[User], get_user_model())
     participants = []
     for spec in specifications:
         user = user_model.objects.create_user(

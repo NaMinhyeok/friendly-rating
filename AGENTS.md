@@ -61,6 +61,9 @@ make setup
 # 반복 중 관련 테스트
 make test PYTEST_ARGS="apps/ratings/tests/test_score_rules.py -q"
 
+# 반복 중 정적 타입 검사
+make typecheck
+
 # 코드·설정·스크립트 변경 완료 전 전체 검사
 make check
 ```
@@ -70,6 +73,19 @@ make check
 의존성으로 해결할 수 없는지 먼저 확인한다.
 
 `Makefile`은 편의 진입점이고 전체 게이트의 구현 정본은 `scripts/check`다.
+
+## 정적 타입 계약
+
+- Pyrefly는 migration을 제외한 프로젝트 전체를 `default` preset으로 검사한다.
+  `score_rules.py`와 `services/`는 별도 `strict` 검사 대상이며, 향후 API 패키지도
+  생성되는 시점부터 `strict` 범위에 넣는다.
+- 오류 수를 맞추기 위한 baseline, 파일 단위 대량 suppression, 규칙의 전역 비활성화는
+  추가하지 않는다. 진단은 타입을 명확히 하거나 실제 결함을 고쳐 해결한다.
+- 런타임에서 의도적으로 잘못된 타입을 전달하는 음성 테스트에만 정확한 진단 코드를
+  지정한 한 줄 suppression을 허용한다. 이유를 인접한 테스트에서 드러내고 production
+  코드나 정상 경로로 suppression을 퍼뜨리지 않는다.
+- `make typecheck`는 반복 작업용 진입점이다. 검사 대상과 실행 순서의 정본은 다른
+  품질 검사와 마찬가지로 `scripts/check`다.
 
 ## 반드시 보존할 도메인·운영 계약
 

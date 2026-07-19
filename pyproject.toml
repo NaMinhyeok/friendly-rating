@@ -15,6 +15,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    "django-stubs==5.2.9",
+    "pyrefly==1.1.1",
     "pytest==9.1.1",
     "pytest-django==4.12.0",
     "ruff==0.15.22",
@@ -27,6 +29,12 @@ package = false
 DJANGO_SETTINGS_MODULE = "config.settings"
 python_files = ["test_*.py"]
 addopts = "-ra --strict-config --strict-markers"
+
+[tool.pyrefly]
+preset = "default"
+python-version = "3.13"
+project-includes = ["apps", "config", "manage.py"]
+project-excludes = ["apps/ratings/migrations/**"]
 
 [tool.ruff]
 target-version = "py313"

@@ -1,10 +1,12 @@
 import re
 from io import StringIO
+from typing import cast
 from unittest.mock import patch
 
 import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import PBKDF2PasswordHasher
+from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import connection
@@ -29,6 +31,10 @@ DML_PATTERN = re.compile(
     r"^\s*(INSERT|UPDATE|DELETE|MERGE|REPLACE)\b",
     re.IGNORECASE,
 )
+
+
+def get_concrete_user_model() -> type[User]:
+    return cast(type[User], get_user_model())
 
 
 def run_provision_command(*arguments, environment=None):
@@ -71,7 +77,7 @@ def test_invalid_participant_configuration_does_not_change_database(
         run_provision_command(environment=environment)
 
     assert (
-        not get_user_model()
+        not get_concrete_user_model()
         .objects.filter(username__startswith="participant-")
         .exists()
     )
@@ -91,7 +97,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         ]
 
     def aggregate_snapshot(self):
-        user_model = get_user_model()
+        user_model = get_concrete_user_model()
         return {
             "users": list(
                 user_model.objects.filter(username__startswith="participant-")
@@ -221,9 +227,11 @@ class ProvisionParticipantsCommandTests(TestCase):
 
     def test_check_detects_legacy_hash_without_upgrading_it(self):
         self.run_command()
-        user = get_user_model().objects.get(username="participant-1")
+        user = get_concrete_user_model().objects.get(username="participant-1")
         legacy_hash = PBKDF2PasswordHasher().encode("1234", "legacy-salt", 1)
-        get_user_model().objects.filter(pk=user.pk).update(password=legacy_hash)
+        get_concrete_user_model().objects.filter(pk=user.pk).update(
+            password=legacy_hash
+        )
 
         with CaptureQueriesContext(connection) as queries:
             with self.assertRaisesMessage(CommandError, "PIN 해시 정책"):
@@ -236,17 +244,21 @@ class ProvisionParticipantsCommandTests(TestCase):
     def test_default_mode_rejects_drift_without_dml(self):
         self.run_command()
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)
-        get_user_model().objects.filter(pk=participant.user_id).update(is_staff=True)
+        get_concrete_user_model().objects.filter(pk=participant.user_id).update(
+            is_staff=True
+        )
 
         with CaptureQueriesContext(connection) as queries:
             with self.assertRaisesMessage(CommandError, "변경하지 않았습니다"):
                 self.run_command()
 
         self.assertEqual(self.dml_queries(queries.captured_queries), [])
-        self.assertTrue(get_user_model().objects.get(pk=participant.user_id).is_staff)
+        self.assertTrue(
+            get_concrete_user_model().objects.get(pk=participant.user_id).is_staff
+        )
 
     def test_reconcile_rejects_partial_graph_without_dml(self):
-        user = get_user_model().objects.create_user(
+        user = get_concrete_user_model().objects.create_user(
             username="participant-1",
             password="1234",
         )
@@ -269,7 +281,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         self.add_score_history_and_device()
         first = Participant.objects.get(slot=Participant.Slot.FIRST)
         first_user_id = first.user_id
-        get_user_model().objects.filter(pk=first_user_id).update(
+        get_concrete_user_model().objects.filter(pk=first_user_id).update(
             is_active=False,
             is_staff=True,
             is_superuser=True,
@@ -285,7 +297,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         output = self.run_command("--reconcile", environment=RECONCILED_ENV)
 
         first.refresh_from_db()
-        user = get_user_model().objects.get(pk=first_user_id)
+        user = get_concrete_user_model().objects.get(pk=first_user_id)
         self.assertEqual(first.display_name, "민호")
         self.assertEqual(user.first_name, "민호")
         self.assertTrue(user.check_password("4321"))
@@ -391,7 +403,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         )
         first.user.username = "legacy-participant-1"
         first.user.save(update_fields=["username"])
-        get_user_model().objects.create_user(username="participant-1")
+        get_concrete_user_model().objects.create_user(username="participant-1")
         before = self.aggregate_snapshot()
 
         with CaptureQueriesContext(connection) as queries:

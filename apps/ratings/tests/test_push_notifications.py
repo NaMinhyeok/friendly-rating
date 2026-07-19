@@ -1,8 +1,11 @@
 import json
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 import pytest
+from django.contrib.auth import get_user_model
+from django.contrib.auth.models import User
 from django.test import Client
 from django.urls import reverse
 from firebase_admin import messaging
@@ -31,23 +34,98 @@ def _post_json(client, url_name, fid=VALID_FID):
     )
 
 
+def _push_device_state():
+    return list(
+        PushDevice.objects.order_by("pk").values_list(
+            "pk",
+            "participant_id",
+            "firebase_installation_id",
+            "is_active",
+            "user_agent",
+            "created_at",
+            "updated_at",
+        )
+    )
+
+
+@pytest.mark.parametrize(
+    "url_name",
+    ("register-push-device", "unregister-push-device"),
+)
 @pytest.mark.django_db
-def test_registration_requires_login(client):
-    response = _post_json(client, "register-push-device")
+def test_push_device_mutations_require_login_without_writing(client, url_name):
+    response = _post_json(client, url_name)
 
     assert response.status_code == 302
+    assert response.headers["Location"] == (
+        f"{reverse('login')}?next={reverse(url_name)}"
+    )
     assert not PushDevice.objects.exists()
 
 
+@pytest.mark.parametrize(
+    "url_name",
+    ("register-push-device", "unregister-push-device"),
+)
 @pytest.mark.django_db
-def test_registration_requires_csrf(participant_pair):
+def test_push_device_mutations_require_csrf_without_writing(
+    participant_pair,
+    url_name,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=VALID_FID,
+    )
     csrf_client = Client(enforce_csrf_checks=True)
     csrf_client.force_login(participant_pair.first.user)
+    original_state = _push_device_state()
 
-    response = _post_json(csrf_client, "register-push-device")
+    response = _post_json(csrf_client, url_name)
 
     assert response.status_code == 403
-    assert not PushDevice.objects.exists()
+    assert _push_device_state() == original_state
+
+
+@pytest.mark.parametrize(
+    ("url_name", "expected_status", "expected_registered"),
+    (
+        ("register-push-device", 201, True),
+        ("unregister-push-device", 200, False),
+    ),
+)
+@pytest.mark.django_db
+def test_push_device_mutations_accept_a_valid_csrf_token(
+    participant_pair,
+    url_name,
+    expected_status,
+    expected_registered,
+):
+    if url_name == "unregister-push-device":
+        PushDevice.objects.create(
+            participant=participant_pair.first,
+            firebase_installation_id=VALID_FID,
+        )
+    csrf_client = Client(enforce_csrf_checks=True)
+    csrf_client.force_login(participant_pair.first.user)
+    home_response = csrf_client.get(reverse("home"))
+    csrf_token = csrf_client.cookies["csrftoken"].value
+
+    response = csrf_client.post(
+        reverse(url_name),
+        data=json.dumps({"fid": VALID_FID}),
+        content_type="application/json",
+        HTTP_X_CSRFTOKEN=csrf_token,
+    )
+
+    device = PushDevice.objects.get(firebase_installation_id=VALID_FID)
+    assert home_response.status_code == 200
+    assert response.status_code == expected_status
+    assert response.json() == {
+        "ok": True,
+        "registered": expected_registered,
+    }
+    assert device.participant == participant_pair.first
+    assert device.is_active is expected_registered
 
 
 @pytest.mark.django_db
@@ -59,6 +137,10 @@ def test_participant_can_register_multiple_devices(client, participant_pair):
 
     assert first_response.status_code == 201
     assert second_response.status_code == 201
+    assert first_response.headers["Content-Type"] == "application/json"
+    assert second_response.headers["Content-Type"] == "application/json"
+    assert first_response.json() == {"ok": True, "registered": True}
+    assert second_response.json() == {"ok": True, "registered": True}
     assert participant_pair.first.push_devices.filter(is_active=True).count() == 2
 
 
@@ -75,6 +157,8 @@ def test_registration_reactivates_and_reassigns_a_fid(client, participant_pair):
 
     device = PushDevice.objects.get(firebase_installation_id=VALID_FID)
     assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/json"
+    assert response.json() == {"ok": True, "registered": True}
     assert device.participant == participant_pair.first
     assert device.is_active
 
@@ -114,24 +198,169 @@ def test_participant_cannot_unregister_another_participants_device(
 
     device.refresh_from_db()
     assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/json"
+    assert response.json() == {"ok": True, "registered": False}
     assert device.is_active
 
 
 @pytest.mark.parametrize(
+    "url_name",
+    ("register-push-device", "unregister-push-device"),
+)
+@pytest.mark.parametrize(
     "fid",
-    [
+    (
+        pytest.param(None, id="not-a-string-null"),
+        pytest.param(123, id="not-a-string-number"),
         pytest.param("not valid", id="not-url-safe"),
         pytest.param("a12345678901234567890A", id="invalid-prefix"),
-    ],
+        pytest.param(f"c{'A' * 20}", id="too-short"),
+        pytest.param(f"c{'A' * 22}", id="too-long"),
+    ),
 )
 @pytest.mark.django_db
-def test_invalid_fid_is_rejected(client, participant_pair, fid):
+def test_invalid_fid_is_rejected_without_writing(
+    client,
+    participant_pair,
+    url_name,
+    fid,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=VALID_FID,
+    )
     client.force_login(participant_pair.first.user)
+    original_state = _push_device_state()
 
-    response = _post_json(client, "register-push-device", fid)
+    response = _post_json(client, url_name, fid)
 
     assert response.status_code == 400
-    assert not PushDevice.objects.exists()
+    assert response.json() == {
+        "ok": False,
+        "error": "올바른 Firebase 기기 ID가 필요합니다.",
+    }
+    assert _push_device_state() == original_state
+
+
+@pytest.mark.parametrize(
+    "url_name",
+    ("register-push-device", "unregister-push-device"),
+)
+@pytest.mark.parametrize(
+    ("body", "content_type", "expected_status", "expected_error"),
+    (
+        pytest.param(
+            f"fid={VALID_FID}",
+            "text/plain",
+            415,
+            "application/json 요청만 지원합니다.",
+            id="non-json-content-type",
+        ),
+        pytest.param(
+            "{",
+            "application/json",
+            400,
+            "올바른 JSON을 입력해 주세요.",
+            id="malformed-json",
+        ),
+        pytest.param(
+            "[]",
+            "application/json",
+            400,
+            "올바른 Firebase 기기 ID가 필요합니다.",
+            id="non-object-json",
+        ),
+        pytest.param(
+            "{}",
+            "application/json",
+            400,
+            "올바른 Firebase 기기 ID가 필요합니다.",
+            id="missing-fid",
+        ),
+        pytest.param(
+            json.dumps({"fid": VALID_FID, "padding": "x" * 4096}),
+            "application/json",
+            400,
+            "요청이 너무 큽니다.",
+            id="body-over-4096-bytes",
+        ),
+    ),
+)
+@pytest.mark.django_db
+def test_push_json_boundaries_reject_without_writing(
+    client,
+    participant_pair,
+    url_name,
+    body,
+    content_type,
+    expected_status,
+    expected_error,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=VALID_FID,
+    )
+    client.force_login(participant_pair.first.user)
+    original_state = _push_device_state()
+
+    response = client.post(
+        reverse(url_name),
+        data=body,
+        content_type=content_type,
+    )
+
+    assert response.status_code == expected_status
+    assert response.headers["Content-Type"] == "application/json"
+    assert response.json() == {"ok": False, "error": expected_error}
+    assert _push_device_state() == original_state
+
+
+@pytest.mark.parametrize(
+    "url_name",
+    ("register-push-device", "unregister-push-device"),
+)
+@pytest.mark.django_db
+def test_push_device_mutations_require_post_without_writing(
+    client,
+    participant_pair,
+    url_name,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=VALID_FID,
+    )
+    client.force_login(participant_pair.first.user)
+    original_state = _push_device_state()
+
+    response = client.get(reverse(url_name))
+
+    assert response.status_code == 405
+    assert _push_device_state() == original_state
+
+
+@pytest.mark.parametrize(
+    "url_name",
+    ("register-push-device", "unregister-push-device"),
+)
+@pytest.mark.django_db
+def test_authenticated_non_participant_cannot_mutate_push_devices(
+    client,
+    participant_pair,
+    url_name,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=VALID_FID,
+    )
+    user_model = cast(type[User], get_user_model())
+    user = user_model.objects.create_user(username="not-a-participant")
+    client.force_login(user)
+    original_state = _push_device_state()
+
+    response = _post_json(client, url_name)
+
+    assert response.status_code == 403
+    assert _push_device_state() == original_state
 
 
 @pytest.mark.django_db
@@ -146,6 +375,8 @@ def test_owned_device_can_be_unregistered(client, participant_pair):
 
     device.refresh_from_db()
     assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/json"
+    assert response.json() == {"ok": True, "registered": False}
     assert not device.is_active
 
 

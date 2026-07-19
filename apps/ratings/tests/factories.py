@@ -1,6 +1,7 @@
-from typing import NamedTuple
+from typing import NamedTuple, cast
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import User
 
 from ..models import Participant, RelationshipScore
 
@@ -13,7 +14,7 @@ class ParticipantPair(NamedTuple):
 
 
 def create_participant_pair() -> ParticipantPair:
-    user_model = get_user_model()
+    user_model = cast(type[User], get_user_model())
     first_user = user_model.objects.create_user(username="participant-1")
     second_user = user_model.objects.create_user(username="participant-2")
     first = Participant.objects.create(

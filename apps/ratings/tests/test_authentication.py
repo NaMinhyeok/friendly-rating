@@ -60,6 +60,7 @@ class PinLoginTests(TestCase):
     def test_account_is_locked_after_failures_from_different_ips(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)
 
+        response = None
         for attempt in range(1, 6):
             response = self.client.post(
                 reverse("login"),
@@ -67,6 +68,7 @@ class PinLoginTests(TestCase):
                 REMOTE_ADDR=f"192.0.2.{attempt}",
             )
 
+        assert response is not None
         self.assertEqual(response.status_code, 429)
         self.assertEqual(response.headers["Retry-After"], "900")
         self.assertContains(
@@ -187,12 +189,43 @@ class PinLoginTests(TestCase):
         self.client.force_login(participant.user)
 
         get_response = self.client.get(reverse("logout"))
+        home_after_get = self.client.get(reverse("home"))
         post_response = self.client.post(reverse("logout"))
 
         self.assertEqual(get_response.status_code, 405)
+        self.assertEqual(home_after_get.status_code, 200)
         self.assertRedirects(post_response, reverse("login"))
         self.assertRedirects(
             self.client.get(reverse("home")),
+            f"{reverse('login')}?next={reverse('home')}",
+        )
+
+    def test_logout_requires_csrf_and_preserves_the_session_on_failure(self):
+        participant = Participant.objects.get(slot=Participant.Slot.FIRST)
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(participant.user)
+
+        response = csrf_client.post(reverse("logout"))
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(csrf_client.get(reverse("home")).status_code, 200)
+
+    def test_logout_accepts_a_valid_csrf_token(self):
+        participant = Participant.objects.get(slot=Participant.Slot.FIRST)
+        csrf_client = Client(enforce_csrf_checks=True)
+        csrf_client.force_login(participant.user)
+        home_response = csrf_client.get(reverse("home"))
+        csrf_token = csrf_client.cookies["csrftoken"].value
+
+        response = csrf_client.post(
+            reverse("logout"),
+            {"csrfmiddlewaretoken": csrf_token},
+        )
+
+        self.assertEqual(home_response.status_code, 200)
+        self.assertRedirects(response, reverse("login"))
+        self.assertRedirects(
+            csrf_client.get(reverse("home")),
             f"{reverse('login')}?next={reverse('home')}",
         )
 
