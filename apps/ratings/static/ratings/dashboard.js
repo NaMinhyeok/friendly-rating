@@ -116,14 +116,14 @@ function initializeDashboard(root) {
 
       ownCurrentScore = change.resultingScore;
       if (isTargetCommand) {
-        showFormStatus(
+        showScoreToast(
           form,
           `친밀도를 ${change.resultingScore}점으로 기록했어요.`,
           "success",
         );
       } else {
         const sign = change.delta > 0 ? "+" : "";
-        showFormStatus(
+        showScoreToast(
           form,
           `친밀도를 ${sign}${change.delta}점 변경했어요.`,
           "success",
@@ -138,10 +138,12 @@ function initializeDashboard(root) {
       if (redirectWhenAuthenticationExpired(error)) {
         return;
       }
-      shouldUnlockSubmission = !showApiFormError(form, error);
       if (isScoreUnchangedError(error)) {
+        showScoreToast(form, error.message, "warning");
         form.querySelector("[name=amount]").value = "";
         await loadScores();
+      } else {
+        shouldUnlockSubmission = !showApiFormError(form, error);
       }
     } finally {
       isSubmitting = false;
@@ -342,6 +344,15 @@ function readIntegerInputValue(input) {
   return Number.isInteger(value) ? value : null;
 }
 
+function hasFractionalInputValue(input) {
+  const rawValue = typeof input?.value === "string" ? input.value.trim() : "";
+  if (rawValue === "") {
+    return false;
+  }
+  const value = Number(rawValue);
+  return Number.isFinite(value) && !Number.isInteger(value);
+}
+
 function updateScoreInputUi(form, operation, currentScore) {
   if (!form) {
     return;
@@ -409,26 +420,36 @@ function readScoreChangeCommand(form) {
   const amount = readIntegerInputValue(amountInput);
   const reason = reasonInput?.value.trim() || "";
   let isValid = true;
+  let hasInlineError = false;
 
   if (!["increase", "decrease", "target"].includes(operation)) {
     showFieldError(form, "operation", "점수를 바꿀 방법을 선택해 주세요.");
     isValid = false;
+    hasInlineError = true;
   }
   const minimum = operation === "target" ? 0 : 1;
-  if (amount === null || amount < minimum || amount > 100) {
+  if (hasFractionalInputValue(amountInput)) {
+    markFieldInvalid(form, "amount");
+    showScoreToast(form, "점수는 소수점 없이 정수로 입력해 주세요.", "warning");
+    isValid = false;
+  } else if (amount === null || amount < minimum || amount > 100) {
     const message =
       operation === "target"
         ? "최종 점수는 0부터 100 사이의 정수여야 합니다."
         : "변경할 점수는 1부터 100 사이의 정수여야 합니다.";
     showFieldError(form, "amount", message);
     isValid = false;
+    hasInlineError = true;
   }
   if (reason.length > 200) {
     showFieldError(form, "reason", "변경 이유는 200자 이하여야 합니다.");
     isValid = false;
+    hasInlineError = true;
   }
   if (!isValid) {
-    showFormStatus(form, "입력값을 확인해 주세요.", "error");
+    if (hasInlineError) {
+      showFormStatus(form, "입력값을 확인해 주세요.", "error");
+    }
     focusFirstInvalidField(form);
     return null;
   }
@@ -516,6 +537,12 @@ function showFieldError(form, field, message) {
   });
 }
 
+function markFieldInvalid(form, field) {
+  form.querySelectorAll(`[name="${field}"]`).forEach((input) => {
+    input.setAttribute("aria-invalid", "true");
+  });
+}
+
 function focusFirstInvalidField(form) {
   form.querySelector("[aria-invalid=true]")?.focus();
 }
@@ -528,6 +555,14 @@ function showFormStatus(form, message, state) {
   status.textContent = message;
   status.classList.toggle("form-status--success", state === "success");
   status.classList.toggle("form-status--error", state === "error");
+}
+
+function showScoreToast(form, message, tone) {
+  if (typeof globalThis.woorisaiShowToast === "function") {
+    globalThis.woorisaiShowToast(message, { tone });
+    return;
+  }
+  showFormStatus(form, message, tone === "success" ? "success" : "error");
 }
 
 function setSubmitLabel(form, label) {

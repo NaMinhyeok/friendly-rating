@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "woorisai-";
-const STATIC_CACHE = `${CACHE_PREFIX}static-v4`;
+const STATIC_CACHE = `${CACHE_PREFIX}static-v5`;
 const OFFLINE_URL = "/static/ratings/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,

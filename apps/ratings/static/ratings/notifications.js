@@ -380,74 +380,17 @@ function readForegroundMessage(value) {
 function handleForegroundMessage(payload) {
   const threadLink = readThreadLink(payload?.fcmOptions?.link);
   const message = readForegroundMessage(payload?.notification?.body);
-  showForegroundNotification(threadLink, message);
+  globalThis.woorisaiShowToast?.(message, {
+    tone: "info",
+    href: threadLink,
+    ariaLabel: threadLink ? `${message}. 대화 열기` : null,
+    duration: 10000,
+  });
   document.dispatchEvent(
     new CustomEvent("woorisai:push-message", {
       detail: { threadLink },
     }),
   );
-}
-
-function showForegroundNotification(threadLink, message) {
-  const existingToast = document.querySelector("[data-foreground-notification]");
-  existingToast?.remove();
-
-  let region = document.querySelector("[data-foreground-notification-region]");
-  if (!region) {
-    region = document.createElement("div");
-    region.dataset.foregroundNotificationRegion = "";
-    region.setAttribute("role", "status");
-    region.setAttribute("aria-live", "polite");
-    region.setAttribute("aria-atomic", "true");
-    document.body.append(region);
-  }
-
-  const toast = document.createElement("div");
-  toast.className = "foreground-notification";
-  toast.dataset.foregroundNotification = "";
-  const content = document.createElement(threadLink ? "a" : "div");
-  content.className = "foreground-notification__content";
-  if (threadLink) {
-    content.href = threadLink;
-    content.setAttribute("aria-label", `${message}. 대화 열기`);
-  }
-  const mark = document.createElement("span");
-  mark.setAttribute("aria-hidden", "true");
-  mark.textContent = "♥";
-  const messageElement = document.createElement("strong");
-  messageElement.textContent = message;
-  content.append(mark, messageElement);
-  toast.append(content);
-  region.append(toast);
-
-  let isFocused = false;
-  let isHovered = false;
-  let removalTimer;
-  const pauseRemoval = () => window.clearTimeout(removalTimer);
-  const scheduleRemoval = () => {
-    pauseRemoval();
-    if (isFocused || isHovered) {
-      return;
-    }
-    removalTimer = window.setTimeout(() => toast.remove(), 10000);
-  };
-  toast.addEventListener("mouseenter", () => {
-    isHovered = true;
-    pauseRemoval();
-  });
-  toast.addEventListener("mouseleave", () => {
-    isHovered = false;
-    scheduleRemoval();
-  });
-  toast.addEventListener("focusin", () => {
-    isFocused = true;
-    pauseRemoval();
-  });
-  toast.addEventListener("focusout", () => {
-    isFocused = false;
-    scheduleRemoval();
-  });
-  scheduleRemoval();
 }
 
 function updateView(

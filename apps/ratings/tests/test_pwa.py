@@ -47,17 +47,20 @@ def test_service_worker_is_available_at_its_public_root_path(client):
     assert response.status_code == 200
     assert response.headers["Content-Type"] == "application/javascript"
     assert response.headers["Service-Worker-Allowed"] == "/"
-    assert "static-v4" in body
-    assert "static-v3" not in body
+    assert "static-v5" in body
+    assert "static-v4" not in body
 
 
 @pytest.mark.django_db
 def test_home_includes_installable_pwa_metadata(authenticated_client):
     response = authenticated_client.get(reverse("home"))
+    content = response.content.decode()
 
     assertContains(response, 'rel="manifest"')
     assertContains(response, 'rel="apple-touch-icon"')
     assertContains(response, "apple-mobile-web-app-capable")
+    assertContains(response, "data-toast-region")
+    assert content.index("ratings/toast.js") < content.index("ratings/app.js")
 
 
 @pytest.mark.django_db
@@ -146,7 +149,9 @@ def test_foreground_notification_links_only_to_a_same_origin_score_thread():
     assert "payload?.fcmOptions?.link" in source
     assert "url.origin !== window.location.origin" in source
     assert r"!/^\/history\/[1-9]\d*\/$/.test(url.pathname)" in source
-    assert "content.href = threadLink" in source
+    assert "globalThis.woorisaiShowToast" in source
+    assert "href: threadLink" in source
+    assert "duration: 10000" in source
     assert 'new CustomEvent("woorisai:push-message"' in source
     assert "detail: { threadLink }" in source
     assert "innerHTML" not in source

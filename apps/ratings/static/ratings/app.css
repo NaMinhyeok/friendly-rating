@@ -800,13 +800,19 @@ textarea:focus {
   line-height: 1;
 }
 
-.foreground-notification {
+[data-toast-region] {
   position: fixed;
   z-index: 20;
   top: max(1rem, env(safe-area-inset-top));
   left: 50%;
-  display: flex;
   width: min(calc(100% - 2rem), 24rem);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  width: 100%;
   padding: 0.9rem 1rem;
   border: 1px solid rgba(232, 103, 88, 0.2);
   border-radius: 15px;
@@ -814,18 +820,58 @@ textarea:focus {
   background: rgba(255, 253, 251, 0.97);
   box-shadow: var(--shadow);
   font-size: 0.82rem;
-  transform: translateX(-50%);
+  animation: toast-enter 180ms ease-out;
+  pointer-events: auto;
 }
 
-.foreground-notification__content {
+.toast__content {
   display: flex;
   width: 100%;
   align-items: center;
   gap: 0.55rem;
 }
 
-.foreground-notification span {
+.toast__mark {
   color: var(--coral);
+}
+
+.toast--success {
+  border-color: #cde2d2;
+  background: rgba(237, 248, 240, 0.97);
+}
+
+.toast--success .toast__mark {
+  color: var(--sage);
+}
+
+.toast--warning {
+  border-color: rgba(197, 139, 54, 0.32);
+  background: rgba(255, 248, 232, 0.98);
+}
+
+.toast--warning .toast__mark {
+  color: #a36b1f;
+}
+
+.toast--error {
+  border-color: rgba(187, 63, 57, 0.28);
+  background: rgba(255, 240, 238, 0.98);
+}
+
+.toast--error .toast__mark {
+  color: #bb3f39;
+}
+
+@keyframes toast-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-0.45rem) scale(0.98);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .message-stack {

@@ -150,11 +150,21 @@ function evaluateCommand({ operation, amount, reason, currentScore = null }) {
           },
         };
         const errors = [];
+        const markedFields = [];
+        const statuses = [];
+        const toasts = [];
         showFieldError = (_form, field, message) => errors.push({ field, message });
-        showFormStatus = () => undefined;
+        markFieldInvalid = (_form, field) => markedFields.push(field);
+        showFormStatus = (_form, message, state) => statuses.push({ message, state });
         focusFirstInvalidField = () => undefined;
+        globalThis.woorisaiShowToast = (message, options) => {
+          toasts.push({ message, tone: options.tone });
+        };
         globalThis.commandResult = readScoreChangeCommand(form, fixture.currentScore);
         globalThis.commandErrors = errors;
+        globalThis.commandMarkedFields = markedFields;
+        globalThis.commandStatuses = statuses;
+        globalThis.commandToasts = toasts;
       }
     `,
     sandbox,
@@ -162,7 +172,13 @@ function evaluateCommand({ operation, amount, reason, currentScore = null }) {
   );
 
   return JSON.parse(
-    JSON.stringify({ command: sandbox.commandResult, errors: sandbox.commandErrors }),
+    JSON.stringify({
+      command: sandbox.commandResult,
+      errors: sandbox.commandErrors,
+      markedFields: sandbox.commandMarkedFields,
+      statuses: sandbox.commandStatuses,
+      toasts: sandbox.commandToasts,
+    }),
   );
 }
 
@@ -337,6 +353,26 @@ test("target mode rejects a raw empty value instead of treating it as zero", () 
   ]);
 });
 
+test("a fractional score uses a warning toast and marks the input invalid", () => {
+  const result = evaluateCommand({
+    operation: "target",
+    amount: "35.5",
+    reason: "",
+    currentScore: 35,
+  });
+
+  assert.equal(result.command, null);
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.markedFields, ["amount"]);
+  assert.deepEqual(result.statuses, []);
+  assert.deepEqual(result.toasts, [
+    {
+      message: "점수는 소수점 없이 정수로 입력해 주세요.",
+      tone: "warning",
+    },
+  ]);
+});
+
 test("target mode leaves same-score detection to the locked server state", () => {
   assert.deepEqual(
     readCommand({
@@ -458,9 +494,11 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
     "[name=csrfmiddlewaretoken]": csrf,
     "[name=operation]:checked": operation,
     "[name=reason]": reason,
+    "[aria-invalid=true]": amount,
   };
   form.selectorLists = {
     'input:not([type="hidden"]), textarea': [operation, amount, reason],
+    '[name="amount"]': [amount],
     "[aria-invalid=true]": [],
     "[data-error-for]": errorLists,
   };
@@ -480,6 +518,7 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   };
 
   const fetchCalls = [];
+  const toastCalls = [];
   const documentListeners = {};
   const globalListeners = {};
   let currentScore = 0;
@@ -490,6 +529,9 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
       globalListeners[type] = listener;
     },
     console,
+    woorisaiShowToast(message, options) {
+      toastCalls.push({ message, tone: options.tone });
+    },
     document: {
       addEventListener(type, listener) {
         documentListeners[type] = listener;
@@ -549,6 +591,7 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   assert.equal(currentParticipant.textContent, "첫째님의 마음 공간");
   assert.equal(scoreTarget.textContent, "둘째");
   assert.equal(scoreList.children.length, 2);
+  assert.deepEqual(toastCalls, []);
   assert.equal(amountLabel.textContent, "몇 점을 바꿀까요?");
   assert.equal(amountHint.textContent, "현재 점수에서 입력한 만큼 바뀌어요.");
   assert.equal(amount.min, "1");
@@ -615,7 +658,10 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
     2,
   );
   assert.equal(descendantText(scoreList.children[0]).includes("100"), true);
-  assert.equal(formStatus.textContent, "친밀도를 100점으로 기록했어요.");
+  assert.equal(formStatus.textContent, "");
+  assert.deepEqual(toastCalls, [
+    { message: "친밀도를 100점으로 기록했어요.", tone: "success" },
+  ]);
   assert.equal(amount.value, "");
   assert.equal(reason.value, "");
   assert.equal(amount.disabled, false);
@@ -635,8 +681,28 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
     3,
   );
   assert.equal(amount.value, "");
-  assert.equal(formStatus.textContent, "이미 100점이에요.");
+  assert.equal(formStatus.textContent, "");
+  assert.deepEqual(toastCalls, [
+    { message: "친밀도를 100점으로 기록했어요.", tone: "success" },
+    { message: "이미 100점이에요.", tone: "warning" },
+  ]);
   assert.equal(submitButton.disabled, false);
+
+  amount.value = "99.5";
+  form.listeners.submit(event);
+  await settleAsyncWork();
+
+  assert.equal(
+    fetchCalls.filter((call) => call.options.method === "POST").length,
+    2,
+  );
+  assert.equal(amount.attributes["aria-invalid"], "true");
+  assert.equal(amount.focused, true);
+  assert.equal(formStatus.textContent, "");
+  assert.deepEqual(toastCalls.at(-1), {
+    message: "점수는 소수점 없이 정수로 입력해 주세요.",
+    tone: "warning",
+  });
 
   sandbox.document.visibilityState = "visible";
   documentListeners.visibilitychange();
