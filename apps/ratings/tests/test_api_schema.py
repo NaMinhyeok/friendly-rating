@@ -325,6 +325,7 @@ def test_media_upload_operations_declare_direct_upload_lifecycle_contract(client
     assert set(_enum_values(document, initiate_request["properties"]["purpose"])) == {
         "scoreChange",
         "comment",
+        "diaryEntry",
     }
     assert set(_enum_values(document, initiate_request["properties"]["kind"])) == {
         "image",
@@ -359,6 +360,10 @@ def test_media_upload_operations_declare_direct_upload_lifecycle_contract(client
                 "properties": {"kind": {"const": "image"}},
                 "not": {"required": ["scoreChangeId"]},
             },
+        },
+        {
+            "if": {"properties": {"purpose": {"const": "diaryEntry"}}},
+            "then": {"not": {"required": ["scoreChangeId"]}},
         },
     ]
 

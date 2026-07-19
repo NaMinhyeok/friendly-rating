@@ -17,6 +17,7 @@ from ..services import (
     add_score_change_comment,
     change_relationship_score,
     complete_media_upload,
+    create_diary_entry,
     discard_media_upload,
     generate_media_download_url,
     initiate_media_upload,
@@ -1464,6 +1465,48 @@ def test_media_content_redirects_with_private_headers_for_a_thread_member(
     assert response.url == f"https://r2.invalid/download/{attachment.object_key}"
     assert response.headers["Cache-Control"] == "private, no-store"
     assert response.headers["Referrer-Policy"] == "no-referrer"
+
+
+def test_media_content_redirects_for_the_other_shared_diary_participant(
+    client,
+    participant_pair,
+    settings,
+    monkeypatch,
+):
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    attachment = _ready_attachment(
+        uploader=participant_pair.first,
+        purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+        suffix="diary-content-view",
+    )
+    create_diary_entry(
+        author=participant_pair.first,
+        content="함께 보는 일기 사진",
+        media_upload_ids=(attachment.pk,),
+    )
+    storage = FakeMediaStorage()
+    monkeypatch.setattr(
+        "apps.ratings.services.media_uploads.get_media_storage_gateway",
+        lambda: storage,
+    )
+    client.force_login(participant_pair.second.user)
+
+    response = client.get(
+        reverse("media-content", kwargs={"attachment_id": attachment.pk})
+    )
+
+    assert response.status_code == 302
+    assert response.url == f"https://r2.invalid/download/{attachment.object_key}"
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert response.headers["Referrer-Policy"] == "no-referrer"
+    assert storage.download_requests == [
+        (
+            attachment.object_key,
+            attachment.content_type,
+            attachment.original_name,
+            settings.MEDIA_DOWNLOAD_URL_TTL_SECONDS,
+        )
+    ]
 
 
 def test_media_content_hides_unattached_uploads(

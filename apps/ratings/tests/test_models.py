@@ -6,7 +6,7 @@ from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
-from ..models import DiaryEntry, ScoreChange, ScoreChangeComment
+from ..models import DiaryEntry, MediaAttachment, ScoreChange, ScoreChangeComment
 
 pytestmark = pytest.mark.django_db
 
@@ -101,6 +101,72 @@ def test_diary_entry_protects_its_author(participant_pair):
 
     with pytest.raises(ProtectedError):
         participant_pair.first.delete()
+
+
+def test_attached_diary_media_requires_only_its_diary_parent(participant_pair):
+    entry = DiaryEntry.objects.create(
+        author=participant_pair.first,
+        content="사진을 남긴 기록",
+    )
+    finalized_at = timezone.now()
+
+    attachment = MediaAttachment.objects.create(
+        uploader=participant_pair.first,
+        diary_entry=entry,
+        purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+        kind=MediaAttachment.Kind.IMAGE,
+        status=MediaAttachment.Status.ATTACHED,
+        object_key="media/diary-valid",
+        original_name="기록.webp",
+        content_type="image/webp",
+        expected_size=1_024,
+        actual_size=1_024,
+        expires_at=finalized_at + timedelta(hours=1),
+        finalized_at=finalized_at,
+    )
+
+    assert attachment.diary_entry == entry
+    with pytest.raises(ProtectedError):
+        entry.delete()
+
+
+def test_database_rejects_attached_diary_media_without_a_diary_parent(
+    participant_pair,
+):
+    finalized_at = timezone.now()
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        MediaAttachment.objects.create(
+            uploader=participant_pair.first,
+            purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+            kind=MediaAttachment.Kind.IMAGE,
+            status=MediaAttachment.Status.ATTACHED,
+            object_key="media/diary-missing-parent",
+            original_name="기록.webp",
+            content_type="image/webp",
+            expected_size=1_024,
+            actual_size=1_024,
+            expires_at=finalized_at + timedelta(hours=1),
+            finalized_at=finalized_at,
+        )
+
+
+def test_database_rejects_a_score_parent_on_pending_diary_media(participant_pair):
+    change = _create_score_change(participant_pair)
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        MediaAttachment.objects.create(
+            uploader=participant_pair.first,
+            score_change=change,
+            purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+            kind=MediaAttachment.Kind.IMAGE,
+            status=MediaAttachment.Status.PENDING,
+            object_key="pending/diary-wrong-parent",
+            original_name="기록.webp",
+            content_type="image/webp",
+            expected_size=1_024,
+            expires_at=timezone.now() + timedelta(hours=1),
+        )
 
 
 def test_score_change_delta_cannot_be_zero(participant_pair):

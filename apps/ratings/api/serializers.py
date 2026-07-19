@@ -22,6 +22,7 @@ from ..models import (
     ScoreChange,
     ScoreChangeComment,
 )
+from ..services.media_uploads import MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS
 from ..services.push_devices import FIREBASE_INSTALLATION_ID_PATTERN
 from .contracts import ErrorCode, ErrorType, ResultType
 
@@ -37,8 +38,15 @@ class DeltaScoreChangeCommand:
 
 
 @dataclass(frozen=True, slots=True)
-class DiaryEntryCommand:
+class DiaryEntryCreateCommand:
     content: str
+    media_upload_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiaryEntryUpdateCommand:
+    content: str | None
+    media_upload_ids: tuple[UUID, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -181,28 +189,92 @@ class DiaryEntryCreateRequestSerializer(StrictRequestSerializer):
         max_length=1000,
         trim_whitespace=True,
     )
+    mediaUploadIds = serializers.ListField(
+        child=StrictUUIDField(),
+        required=False,
+        default=list,
+        max_length=MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS,
+        allow_empty=True,
+    )
 
-    def to_command(self) -> DiaryEntryCommand:
+    @override
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        media_upload_ids = attrs.get("mediaUploadIds", [])
+        if len(media_upload_ids) != len(set(media_upload_ids)):
+            raise serializers.ValidationError(
+                {"mediaUploadIds": "같은 업로드를 중복해서 연결할 수 없습니다."},
+                code="duplicate",
+            )
+        return attrs
+
+    def to_command(self) -> DiaryEntryCreateCommand:
         content = self.validated_data.get("content")
         if not isinstance(content, str):
             raise RuntimeError("Validated diary content is not a string.")
-        return DiaryEntryCommand(content=content)
+        raw_media_upload_ids = self.validated_data.get("mediaUploadIds", [])
+        if not isinstance(raw_media_upload_ids, list) or not all(
+            isinstance(upload_id, UUID) for upload_id in raw_media_upload_ids
+        ):
+            raise RuntimeError("Validated media upload IDs are not UUIDs.")
+        return DiaryEntryCreateCommand(
+            content=content,
+            media_upload_ids=tuple(raw_media_upload_ids),
+        )
 
 
 class DiaryEntryUpdateRequestSerializer(StrictRequestSerializer):
     content = StrictCharField(
+        required=False,
         max_length=1000,
         trim_whitespace=True,
     )
+    mediaUploadIds = serializers.ListField(
+        child=StrictUUIDField(),
+        required=False,
+        max_length=MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS,
+        allow_empty=True,
+    )
 
-    def to_command(self) -> DiaryEntryCommand:
-        content = self.validated_data.get("content")
-        if not isinstance(content, str):
+    @override
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if not attrs:
+            raise serializers.ValidationError(
+                "content 또는 mediaUploadIds 중 하나 이상을 입력해 주세요.",
+                code="required",
+            )
+        media_upload_ids = attrs.get("mediaUploadIds")
+        if media_upload_ids is not None and len(media_upload_ids) != len(
+            set(media_upload_ids)
+        ):
+            raise serializers.ValidationError(
+                {"mediaUploadIds": "같은 업로드를 중복해서 연결할 수 없습니다."},
+                code="duplicate",
+            )
+        return attrs
+
+    def to_command(self) -> DiaryEntryUpdateCommand:
+        raw_content = self.validated_data.get("content")
+        if raw_content is not None and not isinstance(raw_content, str):
             raise RuntimeError("Validated diary content is not a string.")
-        return DiaryEntryCommand(content=content)
+        raw_media_upload_ids = self.validated_data.get("mediaUploadIds")
+        if raw_media_upload_ids is not None and (
+            not isinstance(raw_media_upload_ids, list)
+            or not all(
+                isinstance(upload_id, UUID) for upload_id in raw_media_upload_ids
+            )
+        ):
+            raise RuntimeError("Validated media upload IDs are not UUIDs.")
+        return DiaryEntryUpdateCommand(
+            content=raw_content,
+            media_upload_ids=(
+                tuple(raw_media_upload_ids)
+                if raw_media_upload_ids is not None
+                else None
+            ),
+        )
 
 
-def _diary_entry_request_schema() -> dict[str, Any]:
+def _diary_entry_create_request_schema() -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -212,8 +284,39 @@ def _diary_entry_request_schema() -> dict[str, Any]:
                 "minLength": 1,
                 "maxLength": 1000,
             },
+            "mediaUploadIds": {
+                "type": "array",
+                "items": {"type": "string", "format": "uuid"},
+                "maxItems": MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS,
+                "uniqueItems": True,
+                "default": [],
+            },
         },
         "required": ["content"],
+    }
+
+
+def _diary_entry_update_request_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000,
+            },
+            "mediaUploadIds": {
+                "type": "array",
+                "items": {"type": "string", "format": "uuid"},
+                "maxItems": MAX_DIARY_ENTRY_IMAGE_ATTACHMENTS,
+                "uniqueItems": True,
+            },
+        },
+        "anyOf": [
+            {"required": ["content"]},
+            {"required": ["mediaUploadIds"]},
+        ],
     }
 
 
@@ -226,7 +329,7 @@ class DiaryEntryCreateRequestSerializerExtension(OpenApiSerializerExtension):
         auto_schema: "AutoSchema",
         direction: Direction,
     ) -> dict[str, Any]:
-        return _diary_entry_request_schema()
+        return _diary_entry_create_request_schema()
 
 
 class DiaryEntryUpdateRequestSerializerExtension(OpenApiSerializerExtension):
@@ -238,7 +341,7 @@ class DiaryEntryUpdateRequestSerializerExtension(OpenApiSerializerExtension):
         auto_schema: "AutoSchema",
         direction: Direction,
     ) -> dict[str, Any]:
-        return _diary_entry_request_schema()
+        return _diary_entry_update_request_schema()
 
 
 class ScoreChangeRequestSerializer(StrictRequestSerializer):
@@ -454,7 +557,7 @@ class ScoreChangeCommentRequestSerializerExtension(OpenApiSerializerExtension):
 
 
 class MediaUploadInitiateRequestSerializer(StrictRequestSerializer):
-    purpose = serializers.ChoiceField(choices=("scoreChange", "comment"))
+    purpose = serializers.ChoiceField(choices=("scoreChange", "comment", "diaryEntry"))
     kind = serializers.ChoiceField(choices=("image", "video"))
     fileName = StrictCharField(
         min_length=1,
@@ -482,9 +585,9 @@ class MediaUploadInitiateRequestSerializer(StrictRequestSerializer):
                 {"scoreChangeId": "댓글 첨부에는 점수 변경 ID가 필요합니다."},
                 code="required",
             )
-        if purpose == "scoreChange" and has_score_change_id:
+        if purpose in {"scoreChange", "diaryEntry"} and has_score_change_id:
             raise serializers.ValidationError(
-                {"scoreChangeId": "점수 변경 첨부에는 사용할 수 없는 필드입니다."},
+                {"scoreChangeId": "이 업로드 용도에는 사용할 수 없는 필드입니다."},
                 code="forbidden",
             )
         if purpose == "scoreChange" and kind == "video":
@@ -502,7 +605,7 @@ class MediaUploadInitiateRequestSerializer(StrictRequestSerializer):
         content_type = data.get("contentType")
         expected_size = data.get("byteSize")
         score_change_id = data.get("scoreChangeId")
-        if purpose not in {"scoreChange", "comment"}:
+        if purpose not in {"scoreChange", "comment", "diaryEntry"}:
             raise RuntimeError("Validated media purpose is invalid.")
         if kind not in {"image", "video"}:
             raise RuntimeError("Validated media kind is invalid.")
@@ -541,7 +644,7 @@ class MediaUploadInitiateRequestSerializerExtension(OpenApiSerializerExtension):
             "properties": {
                 "purpose": {
                     "type": "string",
-                    "enum": ["scoreChange", "comment"],
+                    "enum": ["scoreChange", "comment", "diaryEntry"],
                 },
                 "kind": {
                     "type": "string",
@@ -584,6 +687,10 @@ class MediaUploadInitiateRequestSerializerExtension(OpenApiSerializerExtension):
                         "properties": {"kind": {"const": "image"}},
                         "not": {"required": ["scoreChangeId"]},
                     },
+                },
+                {
+                    "if": {"properties": {"purpose": {"const": "diaryEntry"}}},
+                    "then": {"not": {"required": ["scoreChangeId"]}},
                 },
             ],
         }
@@ -727,10 +834,28 @@ class DiaryEntryDataSerializer(serializers.Serializer[DiaryEntry]):
         allow_null=True,
     )
     isMine = serializers.SerializerMethodField()
+    attachments = serializers.SerializerMethodField()
 
     def get_isMine(self, entry: DiaryEntry) -> bool:
         participant_id = self.context.get("participant_id")
         return entry.author_id == participant_id
+
+    @extend_schema_field(MediaAttachmentDataSerializer(many=True))
+    def get_attachments(self, entry: DiaryEntry) -> list[dict[str, Any]]:
+        prefetched = getattr(entry, "_diary_media_attachments", None)
+        if isinstance(prefetched, list) and all(
+            isinstance(attachment, MediaAttachment) for attachment in prefetched
+        ):
+            attachments = prefetched
+        else:
+            attachments = list(
+                MediaAttachment.objects.filter(
+                    diary_entry=entry,
+                    purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+                    status=MediaAttachment.Status.ATTACHED,
+                ).order_by("position", "created_at", "id")
+            )
+        return [dict(MediaAttachmentDataSerializer(item).data) for item in attachments]
 
 
 class ScoreChangeHistoryDataSerializer(serializers.Serializer[ScoreChange]):

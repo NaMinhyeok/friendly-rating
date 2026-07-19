@@ -1,5 +1,6 @@
 import json
 from collections.abc import Mapping
+from datetime import timedelta
 from typing import Any, cast
 
 import pytest
@@ -7,10 +8,11 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import User
 from django.test import Client
 from django.urls import resolve, reverse
+from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
-from ..models import DiaryEntry, ScoreChange
-from ..services import create_diary_entry
+from ..models import DiaryEntry, MediaAttachment, ScoreChange
+from ..services import DiaryEntryNotFoundError, create_diary_entry
 from .http_helpers import csrf_token_from_form
 
 pytestmark = pytest.mark.django_db
@@ -89,6 +91,24 @@ def _create_entry(participant, *, content: str = "오늘 기록"):
     )
 
 
+def _ready_diary_attachment(participant, *, suffix: str) -> MediaAttachment:
+    now = timezone.now()
+    return MediaAttachment.objects.create(
+        uploader=participant,
+        purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+        kind=MediaAttachment.Kind.IMAGE,
+        status=MediaAttachment.Status.READY,
+        object_key=f"media/diary-api-{suffix}",
+        original_name=f"{suffix}.jpg",
+        content_type="image/jpeg",
+        expected_size=512,
+        actual_size=512,
+        etag=f"etag-{suffix}",
+        expires_at=now + timedelta(hours=1),
+        finalized_at=now,
+    )
+
+
 def _resolve_schema(document, schema):
     resolved = schema
     while isinstance(resolved, Mapping) and "$ref" in resolved:
@@ -140,6 +160,7 @@ def test_participant_posts_diary_from_session_with_normalized_content(
             "createdAt": response.json()["success"]["createdAt"],
             "updatedAt": None,
             "isMine": True,
+            "attachments": [],
         },
     }
     assert entry.author == participant_pair.first
@@ -150,6 +171,51 @@ def test_participant_posts_diary_from_session_with_normalized_content(
     assert participant_pair.first_to_second.current_score == 0
     assert participant_pair.second_to_first.current_score == 0
     assert not ScoreChange.objects.exists()
+
+
+def test_participant_atomically_posts_diary_with_ordered_ready_media(
+    participant_pair,
+    settings,
+):
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    first = _ready_diary_attachment(participant_pair.first, suffix="first")
+    second = _ready_diary_attachment(participant_pair.first, suffix="second")
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _mutate_json(
+        client,
+        "post",
+        reverse("api-v1:diary-entry-list"),
+        {
+            "content": "사진과 함께 남긴 기록",
+            "mediaUploadIds": [str(second.pk), str(first.pk)],
+        },
+        csrf_token=csrf_token,
+    )
+
+    assert response.status_code == 201
+    entry = DiaryEntry.objects.get()
+    attachments = response.json()["success"]["attachments"]
+    assert [item["id"] for item in attachments] == [str(second.pk), str(first.pk)]
+    assert attachments[0] == {
+        "id": str(second.pk),
+        "kind": "image",
+        "fileName": "second.jpg",
+        "contentType": "image/jpeg",
+        "byteSize": 512,
+        "contentUrl": reverse(
+            "media-content",
+            kwargs={"attachment_id": second.pk},
+        ),
+    }
+    assert list(
+        MediaAttachment.objects.filter(diary_entry=entry).values_list("id", flat=True)
+    ) == [second.pk, first.pk]
+    assert set(
+        MediaAttachment.objects.filter(diary_entry=entry).values_list(
+            "status", flat=True
+        )
+    ) == {MediaAttachment.Status.ATTACHED}
 
 
 def test_participant_can_create_exactly_one_thousand_characters(
@@ -204,6 +270,8 @@ def test_both_participants_read_the_shared_diary_with_relative_ownership(
     ]
     assert [item["isMine"] for item in first_results] == [False, True]
     assert [item["isMine"] for item in second_results] == [True, False]
+    assert [item["attachments"] for item in first_results] == [[], []]
+    assert [item["attachments"] for item in second_results] == [[], []]
     assert first_response.json()["success"]["paging"] == {
         "pageNumber": 1,
         "pageSize": 20,
@@ -299,6 +367,40 @@ def test_both_participants_can_read_one_shared_diary_entry(participant_pair):
     assert response.headers["Cache-Control"] == "private, no-store"
     assert response.json()["success"]["id"] == entry.pk
     assert response.json()["success"]["isMine"] is False
+    assert response.json()["success"]["attachments"] == []
+
+
+def test_other_participant_reads_a_shared_diary_attachment(participant_pair):
+    attachment = _ready_diary_attachment(participant_pair.first, suffix="shared")
+    entry = create_diary_entry(
+        author=participant_pair.first,
+        content="함께 보는 사진",
+        media_upload_ids=(attachment.pk,),
+    )
+    client, _ = _participant_client(participant_pair.second)
+
+    response = client.get(
+        reverse(
+            "api-v1:diary-entry-detail",
+            kwargs={"diary_entry_id": entry.pk},
+        ),
+        HTTP_ACCEPT="application/json",
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"]["attachments"] == [
+        {
+            "id": str(attachment.pk),
+            "kind": "image",
+            "fileName": "shared.jpg",
+            "contentType": "image/jpeg",
+            "byteSize": 512,
+            "contentUrl": reverse(
+                "media-content",
+                kwargs={"attachment_id": attachment.pk},
+            ),
+        }
+    ]
 
 
 def test_author_can_update_only_the_content(participant_pair):
@@ -326,6 +428,75 @@ def test_author_can_update_only_the_content(participant_pair):
     assert parse_datetime(response.json()["success"]["updatedAt"]) == entry.updated_at
     assert entry.content == "수정한 내용"
     assert entry.updated_at is not None
+
+
+def test_author_can_replace_the_final_attachment_order_without_resending_content(
+    participant_pair,
+    settings,
+):
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    retained = _ready_diary_attachment(participant_pair.first, suffix="retained")
+    entry = create_diary_entry(
+        author=participant_pair.first,
+        content="본문은 그대로",
+        media_upload_ids=(retained.pk,),
+    )
+    added = _ready_diary_attachment(participant_pair.first, suffix="added")
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _mutate_json(
+        client,
+        "patch",
+        reverse(
+            "api-v1:diary-entry-detail",
+            kwargs={"diary_entry_id": entry.pk},
+        ),
+        {"mediaUploadIds": [str(added.pk), str(retained.pk)]},
+        csrf_token=csrf_token,
+    )
+
+    entry.refresh_from_db()
+    assert response.status_code == 200
+    assert response.json()["success"]["content"] == "본문은 그대로"
+    assert [item["id"] for item in response.json()["success"]["attachments"]] == [
+        str(added.pk),
+        str(retained.pk),
+    ]
+    assert list(
+        MediaAttachment.objects.filter(diary_entry=entry).values_list("id", flat=True)
+    ) == [added.pk, retained.pk]
+    assert entry.updated_at is not None
+
+
+def test_author_can_clear_all_diary_attachments_with_an_empty_final_list(
+    participant_pair,
+):
+    attachment = _ready_diary_attachment(participant_pair.first, suffix="remove")
+    entry = create_diary_entry(
+        author=participant_pair.first,
+        content="첨부를 지울 기록",
+        media_upload_ids=(attachment.pk,),
+    )
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _mutate_json(
+        client,
+        "patch",
+        reverse(
+            "api-v1:diary-entry-detail",
+            kwargs={"diary_entry_id": entry.pk},
+        ),
+        {"mediaUploadIds": []},
+        csrf_token=csrf_token,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["success"]["content"] == "첨부를 지울 기록"
+    assert response.json()["success"]["attachments"] == []
+    assert not MediaAttachment.objects.filter(
+        diary_entry=entry,
+        status=MediaAttachment.Status.ATTACHED,
+    ).exists()
 
 
 @pytest.mark.parametrize("method", ("patch", "delete"))
@@ -397,6 +568,17 @@ def test_author_deletes_an_entry_with_success_null(participant_pair):
         ({"content": "기록", "author": 2}, "author", "UNKNOWN_FIELD"),
         ({"content": "기록", "unexpected": True}, "unexpected", "UNKNOWN_FIELD"),
         (
+            {
+                "content": "기록",
+                "mediaUploadIds": [
+                    "00000000-0000-4000-8000-000000000001",
+                    "00000000-0000-4000-8000-000000000001",
+                ],
+            },
+            "mediaUploadIds",
+            "DUPLICATE",
+        ),
+        (
             {"content": "기록", "entryDate": "2026-07-19"},
             "entryDate",
             "UNKNOWN_FIELD",
@@ -434,6 +616,37 @@ def test_create_diary_entry_strictly_validates_input_without_writing(
     assert not DiaryEntry.objects.exists()
 
 
+def test_diary_create_rejects_another_participants_ready_upload_atomically(
+    participant_pair,
+    settings,
+):
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    attachment = _ready_diary_attachment(participant_pair.second, suffix="other-owner")
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _mutate_json(
+        client,
+        "post",
+        reverse("api-v1:diary-entry-list"),
+        {
+            "content": "연결되면 안 되는 기록",
+            "mediaUploadIds": [str(attachment.pk)],
+        },
+        csrf_token=csrf_token,
+    )
+
+    _assert_error(
+        response,
+        status_code=403,
+        error_type="AUTHORIZATION",
+        error_code="PERMISSION_DENIED",
+    )
+    attachment.refresh_from_db()
+    assert not DiaryEntry.objects.exists()
+    assert attachment.status == MediaAttachment.Status.READY
+    assert attachment.diary_entry_id is None
+
+
 def test_empty_patch_is_rejected_without_touching_the_entry(participant_pair):
     entry = _create_entry(participant_pair.first)
     client, csrf_token = _participant_client(participant_pair.first)
@@ -455,10 +668,13 @@ def test_empty_patch_is_rejected_without_touching_the_entry(participant_pair):
         error_type="VALIDATION",
         error_code="INVALID_INPUT",
     )
-    assert any(
-        detail["field"] == "content" and detail["code"] == "REQUIRED"
-        for detail in error["details"]
-    )
+    assert error["details"] == [
+        {
+            "field": None,
+            "code": "REQUIRED",
+            "message": "content 또는 mediaUploadIds 중 하나 이상을 입력해 주세요.",
+        }
+    ]
 
 
 def test_patch_rejects_the_removed_entry_date_field(participant_pair):
@@ -597,6 +813,49 @@ def test_missing_diary_entry_returns_not_found(participant_pair):
     )
 
 
+@pytest.mark.parametrize(
+    ("service_name", "method", "payload"),
+    (
+        ("update_diary_entry", "patch", {"content": "수정할 내용"}),
+        ("delete_diary_entry", "delete", _NO_BODY),
+    ),
+)
+def test_diary_mutation_returns_not_found_when_entry_disappears_before_lock(
+    participant_pair,
+    monkeypatch,
+    service_name,
+    method,
+    payload,
+):
+    entry = _create_entry(participant_pair.first)
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    def raise_not_found(**_kwargs):
+        raise DiaryEntryNotFoundError("일기를 찾을 수 없습니다.")
+
+    monkeypatch.setattr(
+        f"apps.ratings.api.views.{service_name}",
+        raise_not_found,
+    )
+    response = _mutate_json(
+        client,
+        method,
+        reverse(
+            "api-v1:diary-entry-detail",
+            kwargs={"diary_entry_id": entry.pk},
+        ),
+        payload,
+        csrf_token=csrf_token,
+    )
+
+    _assert_error(
+        response,
+        status_code=404,
+        error_type="NOT_FOUND",
+        error_code="NOT_FOUND",
+    )
+
+
 def test_diary_openapi_declares_shared_read_and_author_mutation_contract(client):
     document = client.get(
         reverse("api-schema"),
@@ -631,8 +890,27 @@ def test_diary_openapi_declares_shared_read_and_author_mutation_contract(client)
     assert create["requestBody"]["required"] is True
     assert create_schema["additionalProperties"] is False
     assert create_schema["required"] == ["content"]
-    assert set(create_schema["properties"]) == {"content"}
+    assert set(create_schema["properties"]) == {"content", "mediaUploadIds"}
     assert create_schema["properties"]["content"]["maxLength"] == 1000
+    assert create_schema["properties"]["mediaUploadIds"] == {
+        "type": "array",
+        "items": {"type": "string", "format": "uuid"},
+        "maxItems": 4,
+        "uniqueItems": True,
+        "default": [],
+    }
+    assert set(create["responses"]) == {
+        "201",
+        "400",
+        "403",
+        "404",
+        "406",
+        "409",
+        "413",
+        "415",
+        "500",
+        "503",
+    }
 
     patch = detail_operations["patch"]
     patch_schema = _resolve_schema(
@@ -641,10 +919,32 @@ def test_diary_openapi_declares_shared_read_and_author_mutation_contract(client)
     )
     assert patch["requestBody"]["required"] is True
     assert patch_schema["additionalProperties"] is False
-    assert patch_schema["required"] == ["content"]
-    assert set(patch_schema["properties"]) == {"content"}
+    assert "required" not in patch_schema
+    assert patch_schema["anyOf"] == [
+        {"required": ["content"]},
+        {"required": ["mediaUploadIds"]},
+    ]
+    assert set(patch_schema["properties"]) == {"content", "mediaUploadIds"}
+    assert patch_schema["properties"]["mediaUploadIds"] == {
+        "type": "array",
+        "items": {"type": "string", "format": "uuid"},
+        "maxItems": 4,
+        "uniqueItems": True,
+    }
     assert patch["responses"]["403"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/MutationForbiddenErrorEnvelope"
+    }
+    assert set(patch["responses"]) == {
+        "200",
+        "400",
+        "403",
+        "404",
+        "406",
+        "409",
+        "413",
+        "415",
+        "500",
+        "503",
     }
 
     delete = detail_operations["delete"]
@@ -667,6 +967,7 @@ def test_diary_openapi_declares_shared_read_and_author_mutation_contract(client)
         "createdAt",
         "updatedAt",
         "isMine",
+        "attachments",
     }
     assert entry_schema["properties"]["content"]["maxLength"] == 1000
     assert set(entry_schema["properties"]["updatedAt"]["type"]) == {
@@ -674,3 +975,8 @@ def test_diary_openapi_declares_shared_read_and_author_mutation_contract(client)
         "null",
     }
     assert entry_schema["properties"]["updatedAt"]["format"] == "date-time"
+    assert entry_schema["properties"]["attachments"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/MediaAttachmentData"},
+        "readOnly": True,
+    }

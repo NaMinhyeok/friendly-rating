@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from uuid import UUID
@@ -105,6 +106,7 @@ def cleanup_expired_media_uploads(
     cutoff: datetime | None = None,
     storage: MediaStorageGateway | None = None,
     uploader_id: int | None = None,
+    upload_ids: Sequence[UUID] | None = None,
 ) -> ExpiredMediaCleanupResult:
     if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
         raise MediaUploadValidationError("정리 개수는 1 이상이어야 해요.")
@@ -121,14 +123,16 @@ def cleanup_expired_media_uploads(
     )
     if uploader_id is not None:
         uploads = uploads.filter(uploader_id=uploader_id)
-    upload_ids = tuple(
+    if upload_ids is not None:
+        uploads = uploads.filter(pk__in=tuple(upload_ids))
+    expired_upload_ids = tuple(
         uploads.order_by("expires_at", "created_at", "pk").values_list("pk", flat=True)[
             :limit
         ]
     )
     deleted = 0
     failed = 0
-    for upload_id in upload_ids:
+    for upload_id in expired_upload_ids:
         try:
             claim = _claim_expired_media_cleanup(
                 upload_id=upload_id,
@@ -148,7 +152,7 @@ def cleanup_expired_media_uploads(
             )
 
     return ExpiredMediaCleanupResult(
-        scanned=len(upload_ids),
+        scanned=len(expired_upload_ids),
         deleted=deleted,
         failed=failed,
     )

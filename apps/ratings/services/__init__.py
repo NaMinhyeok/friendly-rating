@@ -1,5 +1,6 @@
 from ..score_rules import ScoreUnchangedError
 from .diary_entries import (
+    DiaryEntryNotFoundError,
     DiaryEntryPermissionError,
     create_diary_entry,
     delete_diary_entry,
@@ -15,6 +16,7 @@ from .media_uploads import (
     MediaUploadStorageError,
     MediaUploadValidationError,
     attach_comment_media_uploads,
+    attach_diary_entry_media_uploads,
     attach_media_uploads,
     attach_score_change_media_uploads,
     complete_media_upload,
@@ -23,6 +25,7 @@ from .media_uploads import (
     finalize_media_upload,
     generate_media_download_url,
     initiate_media_upload,
+    replace_diary_entry_media_uploads,
 )
 from .push_devices import (
     register_participant_push_device,
@@ -34,6 +37,7 @@ from .score_changes import change_relationship_score, set_relationship_score
 __all__ = (
     "ScoreUnchangedError",
     "CompletedMediaUpload",
+    "DiaryEntryNotFoundError",
     "DiaryEntryPermissionError",
     "InitiatedMediaUpload",
     "MediaUploadError",
@@ -44,6 +48,7 @@ __all__ = (
     "MediaUploadValidationError",
     "add_score_change_comment",
     "attach_comment_media_uploads",
+    "attach_diary_entry_media_uploads",
     "attach_media_uploads",
     "attach_score_change_media_uploads",
     "change_relationship_score",
@@ -56,6 +61,7 @@ __all__ = (
     "generate_media_download_url",
     "initiate_media_upload",
     "register_participant_push_device",
+    "replace_diary_entry_media_uploads",
     "set_relationship_score",
     "unregister_participant_push_device",
     "update_diary_entry",
