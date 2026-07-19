@@ -155,6 +155,20 @@ railway ssh -- python manage.py provision_participants
 railway ssh -- python manage.py provision_participants --check
 ```
 
+Railway에서 과거 배포를 다시 활성화해도 데이터베이스 migration은 자동으로
+되돌아가지 않습니다. 롤백 전에는 다음 읽기 전용 명령으로 대상 코드가 현재 schema와
+호환되는지 확인합니다.
+
+```bash
+railway ssh -- python manage.py showmigrations ratings --plan
+```
+
+`ratings.0006_rename_domain_tables`가 적용된 환경의 schema 롤백 하한은 해당 migration을
+도입한 `6519358`입니다. 별도로 검토한 reverse migration 계획 없이 그 이전 revision을
+배포하지 않고, 가능하면 현재 schema와 호환되는 forward fix를 배포합니다. 이후의
+파괴적 schema 변경은 `docs/agent/code-conventions.md`의 expand → migrate/backfill →
+contract 순서를 따릅니다.
+
 ## 보안 범위
 
 4자리 PIN은 두 사람이 가볍게 쓰는 용도에 맞춘 의도적인 선택이며, 강한 사용자

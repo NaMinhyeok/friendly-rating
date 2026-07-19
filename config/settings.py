@@ -43,7 +43,13 @@ def env_json_object(name: str) -> dict[str, str]:
     }
 
 
-IS_RAILWAY = bool(os.getenv("RAILWAY_ENVIRONMENT"))
+_RAILWAY_ENVIRONMENT_MARKERS = (
+    "RAILWAY_ENVIRONMENT_ID",
+    "RAILWAY_ENVIRONMENT_NAME",
+    # Keep the existing marker as a compatibility alias for deployed environments.
+    "RAILWAY_ENVIRONMENT",
+)
+IS_RAILWAY = any(os.getenv(name) for name in _RAILWAY_ENVIRONMENT_MARKERS)
 DEBUG = env_bool("DEBUG", default=not IS_RAILWAY)
 
 SECRET_KEY = os.getenv("SECRET_KEY")
