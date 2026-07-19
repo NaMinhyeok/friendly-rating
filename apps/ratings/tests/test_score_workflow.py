@@ -7,6 +7,7 @@ from django.test import Client
 from django.urls import reverse
 
 from ..models import ScoreChange
+from .http_helpers import csrf_token_from_form
 
 pytestmark = pytest.mark.django_db
 
@@ -75,15 +76,43 @@ def test_score_operation_maps_to_the_expected_delta(
     assert change.reason == (reason or "")
 
 
-def test_score_change_requires_login_without_writing(client, participant_pair):
-    response = client.post(
+def test_score_change_requires_login_without_writing(participant_pair):
+    csrf_client = Client(enforce_csrf_checks=True)
+    login_response = csrf_client.get(reverse("login"))
+    csrf_token = csrf_token_from_form(login_response, None)
+
+    response = csrf_client.post(
         reverse("change-score"),
-        {"operation": "increase", "amount": 1, "reason": "로그인 필요"},
+        {
+            "operation": "increase",
+            "amount": 1,
+            "reason": "로그인 필요",
+            "csrfmiddlewaretoken": csrf_token,
+        },
+        HTTP_ORIGIN="http://testserver",
     )
 
     participant_pair.first_to_second.refresh_from_db()
     assert response.status_code == 302
-    assert response.url == f"{reverse('login')}?next={reverse('change-score')}"
+    assert response.headers["Location"] == (
+        f"{reverse('login')}?next={reverse('change-score')}"
+    )
+    assert participant_pair.first_to_second.current_score == 0
+    assert not ScoreChange.objects.exists()
+
+
+def test_anonymous_score_change_without_csrf_is_rejected_without_writing(
+    participant_pair,
+):
+    csrf_client = Client(enforce_csrf_checks=True)
+
+    response = csrf_client.post(
+        reverse("change-score"),
+        {"operation": "increase", "amount": 1, "reason": "CSRF 없음"},
+    )
+
+    participant_pair.first_to_second.refresh_from_db()
+    assert response.status_code == 403
     assert participant_pair.first_to_second.current_score == 0
     assert not ScoreChange.objects.exists()
 
@@ -107,7 +136,7 @@ def test_score_change_accepts_a_valid_csrf_token(participant_pair):
     csrf_client = Client(enforce_csrf_checks=True)
     csrf_client.force_login(participant_pair.first.user)
     home_response = csrf_client.get(reverse("home"))
-    csrf_token = csrf_client.cookies["csrftoken"].value
+    csrf_token = csrf_token_from_form(home_response, reverse("change-score"))
 
     response = csrf_client.post(
         reverse("change-score"),
@@ -117,6 +146,7 @@ def test_score_change_accepts_a_valid_csrf_token(participant_pair):
             "reason": "정상 요청",
             "csrfmiddlewaretoken": csrf_token,
         },
+        HTTP_ORIGIN="http://testserver",
     )
 
     participant_pair.first_to_second.refresh_from_db()

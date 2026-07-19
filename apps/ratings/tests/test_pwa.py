@@ -86,3 +86,13 @@ def test_notification_client_receives_only_public_configuration(
     assertContains(response, "ratings/notifications.js")
     assertContains(response, "test-project")
     assertNotContains(response, "private_key")
+
+
+def test_notification_client_sends_the_rendered_csrf_token():
+    script_path = finders.find("ratings/notifications.js")
+    assert script_path is not None
+
+    source = Path(script_path).read_text()
+
+    assert '"X-CSRFToken": getCsrfToken()' in source
+    assert 'document.querySelector("[name=csrfmiddlewaretoken]")?.value' in source

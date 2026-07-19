@@ -9,6 +9,7 @@ from django.utils import timezone
 
 from ..models import Participant
 from ..security import get_client_ip_address
+from .http_helpers import csrf_token_from_form
 
 PARTICIPANT_ENV = {
     "PARTICIPANT_1_NAME": "민수",
@@ -41,6 +42,43 @@ class PinLoginTests(TestCase):
         self.assertRedirects(response, reverse("home"))
         home_response = self.client.get(reverse("home"))
         self.assertContains(home_response, "민수님의 마음 공간")
+
+    def test_login_requires_csrf_and_does_not_create_a_session(self):
+        participant = Participant.objects.get(slot=Participant.Slot.FIRST)
+        csrf_client = Client(enforce_csrf_checks=True)
+
+        response = csrf_client.post(
+            reverse("login"),
+            {"participant": participant.pk, "pin": "1234"},
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertRedirects(
+            csrf_client.get(reverse("home")),
+            f"{reverse('login')}?next={reverse('home')}",
+        )
+
+    def test_login_accepts_the_rendered_csrf_token(self):
+        participant = Participant.objects.get(slot=Participant.Slot.FIRST)
+        csrf_client = Client(enforce_csrf_checks=True)
+        login_response = csrf_client.get(reverse("login"))
+        csrf_token = csrf_token_from_form(login_response, None)
+
+        response = csrf_client.post(
+            reverse("login"),
+            {
+                "participant": participant.pk,
+                "pin": "1234",
+                "csrfmiddlewaretoken": csrf_token,
+            },
+            HTTP_ORIGIN="http://testserver",
+        )
+
+        self.assertRedirects(response, reverse("home"))
+        self.assertContains(
+            csrf_client.get(reverse("home")),
+            "민수님의 마음 공간",
+        )
 
     def test_invalid_pin_is_rejected(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)
@@ -215,11 +253,12 @@ class PinLoginTests(TestCase):
         csrf_client = Client(enforce_csrf_checks=True)
         csrf_client.force_login(participant.user)
         home_response = csrf_client.get(reverse("home"))
-        csrf_token = csrf_client.cookies["csrftoken"].value
+        csrf_token = csrf_token_from_form(home_response, reverse("logout"))
 
         response = csrf_client.post(
             reverse("logout"),
             {"csrfmiddlewaretoken": csrf_token},
+            HTTP_ORIGIN="http://testserver",
         )
 
         self.assertEqual(home_response.status_code, 200)
