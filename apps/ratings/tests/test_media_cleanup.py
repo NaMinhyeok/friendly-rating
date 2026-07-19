@@ -190,6 +190,35 @@ def test_cleanup_deletes_expired_uploads_in_each_unattached_status(
     )
 
 
+def test_cleanup_can_target_only_the_retired_upload_ids(participant_pair):
+    cutoff = timezone.now()
+    target = _create_attachment(
+        uploader=participant_pair.first,
+        status=MediaAttachment.Status.DELETING,
+        expires_at=cutoff - timedelta(seconds=1),
+        suffix="targeted",
+    )
+    unrelated = _create_attachment(
+        uploader=participant_pair.first,
+        status=MediaAttachment.Status.READY,
+        expires_at=cutoff - timedelta(seconds=1),
+        suffix="unrelated",
+    )
+    storage = FakeMediaStorage()
+
+    result = cleanup_expired_media_uploads(
+        cutoff=cutoff,
+        limit=1,
+        upload_ids=(target.pk,),
+        storage=storage,
+    )
+
+    assert result == ExpiredMediaCleanupResult(scanned=1, deleted=1, failed=0)
+    assert not MediaAttachment.objects.filter(pk=target.pk).exists()
+    assert MediaAttachment.objects.filter(pk=unrelated.pk).exists()
+    assert storage.deletion_requests == [target.object_key]
+
+
 def test_cleanup_ignores_unexpired_unattached_uploads(participant_pair):
     cutoff = timezone.now()
     attachments = tuple(

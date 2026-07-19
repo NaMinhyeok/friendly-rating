@@ -31,6 +31,7 @@ from ..models import (
     ScoreChangeComment,
 )
 from ..services import (
+    DiaryEntryNotFoundError,
     MediaUploadError,
     MediaUploadNotFoundError,
     MediaUploadPermissionError,
@@ -212,6 +213,17 @@ def _comment_attachment_prefetch() -> Prefetch[str]:
     )
 
 
+def _diary_attachment_prefetch() -> Prefetch[str]:
+    return Prefetch(
+        "media_attachments",
+        queryset=MediaAttachment.objects.filter(
+            purpose=MediaAttachment.Purpose.DIARY_ENTRY,
+            status=MediaAttachment.Status.ATTACHED,
+        ).order_by("position", "created_at", "id"),
+        to_attr="_diary_media_attachments",
+    )
+
+
 def _score_changes_for_participant(
     participant: Participant,
 ) -> QuerySet[ScoreChange]:
@@ -260,9 +272,13 @@ class DiaryEntryListView(APIView):
         if not isinstance(page_number, int) or isinstance(page_number, bool):
             raise RuntimeError("Validated page number is not an integer.")
 
-        entries = DiaryEntry.objects.select_related("author").order_by(
-            "-created_at",
-            "-pk",
+        entries = (
+            DiaryEntry.objects.select_related("author")
+            .prefetch_related(_diary_attachment_prefetch())
+            .order_by(
+                "-created_at",
+                "-pk",
+            )
         )
         paginator = Paginator(entries, DIARY_ENTRY_PAGE_SIZE)
         try:
@@ -289,7 +305,8 @@ class DiaryEntryListView(APIView):
         summary="공유 일기 작성",
         description=(
             "현재 참가자를 작성자로 하여 공유 일기를 작성합니다. 작성자는 요청 "
-            "본문이 아니라 로그인 세션에서 결정됩니다."
+            "본문이 아니라 로그인 세션에서 결정됩니다. 완료된 일기용 업로드 ID를 "
+            "표시 순서대로 함께 전달할 수 있습니다."
         ),
         tags=("diaryEntries",),
         parameters=[CSRF_HEADER_PARAMETER],
@@ -297,11 +314,14 @@ class DiaryEntryListView(APIView):
         responses={
             201: DiaryEntrySuccessEnvelopeSerializer,
             400: BadRequestErrorEnvelopeSerializer,
-            403: ForbiddenErrorEnvelopeSerializer,
+            403: MediaForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
             406: NotAcceptableErrorEnvelopeSerializer,
+            409: MediaUploadConflictErrorEnvelopeSerializer,
             413: RequestBodyTooLargeErrorEnvelopeSerializer,
             415: UnsupportedMediaTypeErrorEnvelopeSerializer,
             500: InternalServerErrorEnvelopeSerializer,
+            503: MediaUploadsUnavailableErrorEnvelopeSerializer,
         },
     )
     def post(self, request: Request) -> Response:
@@ -309,13 +329,18 @@ class DiaryEntryListView(APIView):
         request_serializer = DiaryEntryCreateRequestSerializer(data=request.data)
         request_serializer.is_valid(raise_exception=True)
         command = request_serializer.to_command()
+        if command.media_upload_ids:
+            _ensure_media_uploads_available()
         try:
             entry = create_diary_entry(
                 author=participant,
                 content=command.content,
+                media_upload_ids=command.media_upload_ids,
             )
         except DjangoValidationError as error:
             _raise_diary_validation_error(error)
+        except MediaUploadError as error:
+            _raise_media_upload_api_error(error)
 
         response_serializer = DiaryEntryDataSerializer(
             entry,
@@ -332,7 +357,9 @@ class DiaryEntryDetailView(APIView):
     @staticmethod
     def _entry(diary_entry_id: int) -> DiaryEntry:
         return get_object_or_404(
-            DiaryEntry.objects.select_related("author"),
+            DiaryEntry.objects.select_related("author").prefetch_related(
+                _diary_attachment_prefetch()
+            ),
             pk=diary_entry_id,
         )
 
@@ -361,7 +388,11 @@ class DiaryEntryDetailView(APIView):
     @extend_schema(
         operation_id="updateDiaryEntry",
         summary="공유 일기 수정",
-        description="작성자만 일기 내용을 수정할 수 있습니다.",
+        description=(
+            "작성자만 일기를 수정할 수 있습니다. content를 생략하면 본문을 유지하고, "
+            "mediaUploadIds를 생략하면 첨부를 유지합니다. mediaUploadIds를 전달하면 "
+            "그 배열을 기존 첨부와 새 업로드를 포함한 최종 표시 순서로 사용합니다."
+        ),
         tags=("diaryEntries",),
         parameters=[CSRF_HEADER_PARAMETER],
         request=DiaryEntryUpdateRequestSerializer,
@@ -371,9 +402,11 @@ class DiaryEntryDetailView(APIView):
             403: MutationForbiddenErrorEnvelopeSerializer,
             404: NotFoundErrorEnvelopeSerializer,
             406: NotAcceptableErrorEnvelopeSerializer,
+            409: MediaUploadConflictErrorEnvelopeSerializer,
             413: RequestBodyTooLargeErrorEnvelopeSerializer,
             415: UnsupportedMediaTypeErrorEnvelopeSerializer,
             500: InternalServerErrorEnvelopeSerializer,
+            503: MediaUploadsUnavailableErrorEnvelopeSerializer,
         },
     )
     def patch(self, request: Request, diary_entry_id: int) -> Response:
@@ -382,15 +415,25 @@ class DiaryEntryDetailView(APIView):
         request_serializer = DiaryEntryUpdateRequestSerializer(data=request.data)
         request_serializer.is_valid(raise_exception=True)
         command = request_serializer.to_command()
+        if command.media_upload_ids:
+            _ensure_media_uploads_available()
         try:
             updated_entry = update_diary_entry(
                 entry=entry,
                 author=participant,
                 content=command.content,
+                media_upload_ids=command.media_upload_ids,
             )
         except DjangoValidationError as error:
             _raise_diary_validation_error(error)
+        except DiaryEntryNotFoundError as error:
+            raise NotFound() from error
+        except MediaUploadError as error:
+            _raise_media_upload_api_error(error)
 
+        # The instance loaded before the mutation carries a to_attr prefetch list.
+        # Reload it so attachment replacement never serializes that stale list.
+        updated_entry = self._entry(diary_entry_id)
         response_serializer = DiaryEntryDataSerializer(
             updated_entry,
             context={"participant_id": participant.pk},
@@ -414,7 +457,10 @@ class DiaryEntryDetailView(APIView):
     def delete(self, request: Request, diary_entry_id: int) -> Response:
         participant = _participant_for_request(request)
         entry = self._entry(diary_entry_id)
-        delete_diary_entry(entry=entry, author=participant)
+        try:
+            delete_diary_entry(entry=entry, author=participant)
+        except DiaryEntryNotFoundError as error:
+            raise NotFound() from error
         return _private_no_store(Response(None))
 
 
@@ -468,7 +514,8 @@ class MediaUploadInitiateView(APIView):
             "현재 참가자가 비공개 저장소에 이미지 또는 짧은 영상을 직접 업로드할 "
             "수 있도록 만료 시간이 짧은 URL을 발급합니다. 댓글 첨부는 현재 참가자가 "
             "접근할 수 있는 점수 변경 ID가 필요하고, 점수 변경 이유에는 이미지만 "
-            "첨부할 수 있습니다."
+            "첨부할 수 있습니다. 일기 첨부는 일기를 저장할 때 연결하므로 별도 parent "
+            "ID를 받지 않습니다."
         ),
         tags=("mediaUploads",),
         parameters=[CSRF_HEADER_PARAMETER],
@@ -500,11 +547,11 @@ class MediaUploadInitiateView(APIView):
                 pk=command.score_change_id,
             )
 
-        purpose = (
-            MediaAttachment.Purpose.SCORE_CHANGE
-            if command.purpose == "scoreChange"
-            else MediaAttachment.Purpose.COMMENT
-        )
+        purpose = {
+            "scoreChange": MediaAttachment.Purpose.SCORE_CHANGE,
+            "comment": MediaAttachment.Purpose.COMMENT,
+            "diaryEntry": MediaAttachment.Purpose.DIARY_ENTRY,
+        }[command.purpose]
         kind = (
             MediaAttachment.Kind.IMAGE
             if command.kind == "image"

@@ -251,6 +251,42 @@ def test_participant_initiates_and_completes_a_private_direct_upload(
     assert storage.deletion_requests == [f"pending/{attachment.pk}"]
 
 
+def test_participant_initiates_parentless_diary_video_upload(
+    participant_pair,
+    settings,
+):
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    settings.MEDIA_UPLOAD_URL_TTL_SECONDS = 120
+    storage = FakeMediaStorage()
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    with patch(
+        "apps.ratings.services.media_uploads.get_media_storage_gateway",
+        return_value=storage,
+    ):
+        response = _post_json(
+            client,
+            reverse("api-v1:media-upload-list"),
+            {
+                "purpose": "diaryEntry",
+                "kind": "video",
+                "fileName": "memory.mp4",
+                "contentType": "video/mp4",
+                "byteSize": 1024,
+            },
+            csrf_token=csrf_token,
+        )
+
+    assert response.status_code == 201
+    attachment = MediaAttachment.objects.get(pk=response.json()["success"]["uploadId"])
+    assert attachment.purpose == MediaAttachment.Purpose.DIARY_ENTRY
+    assert attachment.kind == MediaAttachment.Kind.VIDEO
+    assert attachment.score_change_id is None
+    assert attachment.comment_id is None
+    assert attachment.diary_entry_id is None
+    assert storage.upload_requests == [(attachment.object_key, "video/mp4", 1024, 120)]
+
+
 def test_anonymous_media_initiation_requires_authentication(participant_pair, settings):
     settings.MEDIA_UPLOADS_AVAILABLE = True
     client = Client(enforce_csrf_checks=True)
@@ -342,6 +378,15 @@ def test_authenticated_non_participant_cannot_initiate_media(
         ),
         (
             {**_score_image_payload(), "scoreChangeId": 1},
+            "scoreChangeId",
+            "FORBIDDEN",
+        ),
+        (
+            {
+                **_score_image_payload(),
+                "purpose": "diaryEntry",
+                "scoreChangeId": 1,
+            },
             "scoreChangeId",
             "FORBIDDEN",
         ),

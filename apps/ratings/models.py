@@ -211,6 +211,7 @@ class MediaAttachment(models.Model):
     class Purpose(models.TextChoices):
         SCORE_CHANGE = "score_change", "점수 변경"
         COMMENT = "comment", "댓글"
+        DIARY_ENTRY = "diary_entry", "공유 일기"
 
     class Kind(models.TextChoices):
         IMAGE = "image", "이미지"
@@ -239,6 +240,13 @@ class MediaAttachment(models.Model):
     )
     comment = models.ForeignKey(
         ScoreChangeComment,
+        on_delete=models.PROTECT,
+        related_name="media_attachments",
+        null=True,
+        blank=True,
+    )
+    diary_entry = models.ForeignKey(
+        DiaryEntry,
         on_delete=models.PROTECT,
         related_name="media_attachments",
         null=True,
@@ -288,13 +296,38 @@ class MediaAttachment(models.Model):
                         expected_size__gte=1,
                         expected_size__lte=100 * 1024 * 1024,
                     )
+                    | Q(
+                        purpose="diary_entry",
+                        kind="image",
+                        expected_size__gte=1,
+                        expected_size__lte=10 * 1024 * 1024,
+                    )
+                    | Q(
+                        purpose="diary_entry",
+                        kind="video",
+                        expected_size__gte=1,
+                        expected_size__lte=100 * 1024 * 1024,
+                    )
                 ),
                 name="media_attachment_purpose_kind_size_valid",
             ),
             models.CheckConstraint(
                 condition=(
-                    Q(purpose="score_change", comment__isnull=True)
-                    | Q(purpose="comment", score_change__isnull=False)
+                    Q(
+                        purpose="score_change",
+                        comment__isnull=True,
+                        diary_entry__isnull=True,
+                    )
+                    | Q(
+                        purpose="comment",
+                        score_change__isnull=False,
+                        diary_entry__isnull=True,
+                    )
+                    | Q(
+                        purpose="diary_entry",
+                        score_change__isnull=True,
+                        comment__isnull=True,
+                    )
                 ),
                 name="media_attachment_pending_parent_valid",
             ),
@@ -305,12 +338,21 @@ class MediaAttachment(models.Model):
                         score_change__isnull=False,
                         purpose="score_change",
                         comment__isnull=True,
+                        diary_entry__isnull=True,
                     )
                     | Q(
                         status="attached",
                         score_change__isnull=False,
                         purpose="comment",
                         comment__isnull=False,
+                        diary_entry__isnull=True,
+                    )
+                    | Q(
+                        status="attached",
+                        score_change__isnull=True,
+                        purpose="diary_entry",
+                        comment__isnull=True,
+                        diary_entry__isnull=False,
                     )
                     | Q(
                         status__in=(
@@ -323,6 +365,7 @@ class MediaAttachment(models.Model):
                         purpose="score_change",
                         score_change__isnull=True,
                         comment__isnull=True,
+                        diary_entry__isnull=True,
                     )
                     | Q(
                         status__in=(
@@ -335,6 +378,20 @@ class MediaAttachment(models.Model):
                         purpose="comment",
                         score_change__isnull=False,
                         comment__isnull=True,
+                        diary_entry__isnull=True,
+                    )
+                    | Q(
+                        status__in=(
+                            "pending",
+                            "finalizing",
+                            "reclaiming",
+                            "ready",
+                            "deleting",
+                        ),
+                        purpose="diary_entry",
+                        score_change__isnull=True,
+                        comment__isnull=True,
+                        diary_entry__isnull=True,
                     )
                 ),
                 name="media_attachment_status_parent_valid",

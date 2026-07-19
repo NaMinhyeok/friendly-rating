@@ -1604,6 +1604,15 @@ textarea:focus {
   word-break: break-word;
 }
 
+.diary-card > .attachment-gallery {
+  margin: 0 0 1rem;
+}
+
+.diary-card > .attachment-gallery .attachment img,
+.diary-card > .attachment-gallery .attachment video {
+  max-height: 32rem;
+}
+
 .diary-card > footer {
   display: flex;
   flex-wrap: wrap;
@@ -1621,6 +1630,10 @@ textarea:focus {
 
 .diary-edit-form textarea {
   min-height: 9rem;
+}
+
+.diary-edit-media-field {
+  min-width: 0;
 }
 
 .diary-edit-form .form-status {

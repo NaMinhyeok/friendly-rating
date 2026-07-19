@@ -14,6 +14,7 @@
     class="app-shell app-shell--narrow"
     data-diary-root
     data-diary-entries-url="{% url 'api-v1:diary-entry-list' %}"
+    {% if media_uploads_available %}data-media-uploads-url="{% url 'api-v1:media-upload-list' %}"{% endif %}
 >
     <noscript>
         <section class="surface loading-state loading-state--error">
@@ -57,6 +58,32 @@
                 <p id="diary-content-help" class="field-help">이 글은 우리 둘에게만 보여요.</p>
                 <ul id="error-content" class="errorlist" data-diary-error-for="content" hidden></ul>
             </div>
+
+            {% if media_uploads_available %}
+            <div class="field-group media-field" data-diary-media-field>
+                <div class="field-label-row">
+                    <span class="field-label">사진·영상 추가 (선택)</span>
+                    <span class="media-limit">사진 4장 또는 영상 1개</span>
+                </div>
+                <input
+                    class="media-file-input"
+                    id="id_diary_media"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+                    multiple
+                    data-diary-media-input
+                    aria-describedby="diary-media-help diary-media-status"
+                    disabled
+                >
+                <label class="media-picker" for="id_diary_media">
+                    <span aria-hidden="true">＋</span>
+                    사진·영상 선택
+                </label>
+                <p id="diary-media-help" class="field-help">사진은 최대 4장(장당 10MB), 영상은 1개(100MB)까지 올릴 수 있어요.</p>
+                <div class="media-selection" data-diary-media-selection hidden></div>
+                <p id="diary-media-status" class="media-status" data-diary-media-status role="status" aria-live="polite"></p>
+            </div>
+            {% endif %}
 
             <button class="button button--primary button--full" type="submit" data-diary-create-submit disabled>
                 <span data-diary-create-submit-label>일기 남기기</span>

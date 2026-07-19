@@ -41,7 +41,11 @@ def history_view(request):
 @require_GET
 def diary_view(request):
     get_current_participant(request)
-    response = render(request, "ratings/diary.html")
+    response = render(
+        request,
+        "ratings/diary.html",
+        {"media_uploads_available": settings.MEDIA_UPLOADS_AVAILABLE},
+    )
     response.headers["Cache-Control"] = "private, no-store"
     return response
 
