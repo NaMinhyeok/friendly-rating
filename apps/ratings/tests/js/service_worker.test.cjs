@@ -1035,6 +1035,7 @@ test("activation preserves the handoff cache while removing old app caches", asy
   for (const cacheName of [
     "woorisai-static-v7",
     "woorisai-static-v8",
+    "woorisai-static-v9",
     HANDOFF_CACHE,
     "third-party-cache",
   ]) {
@@ -1046,8 +1047,11 @@ test("activation preserves the handoff cache while removing old app caches", asy
   activateHandler(harness)(activate.event);
   await activate.settle();
 
-  assert.deepEqual(cacheStorage.deletedCaches, ["woorisai-static-v7"]);
-  assert.equal(cacheStorage.stores.has("woorisai-static-v8"), true);
+  assert.deepEqual(cacheStorage.deletedCaches, [
+    "woorisai-static-v7",
+    "woorisai-static-v8",
+  ]);
+  assert.equal(cacheStorage.stores.has("woorisai-static-v9"), true);
   assert.equal(cacheStorage.stores.has(HANDOFF_CACHE), true);
   assert.equal(cacheStorage.stores.has("third-party-cache"), true);
 });

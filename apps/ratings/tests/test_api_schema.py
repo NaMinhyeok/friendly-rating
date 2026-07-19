@@ -112,6 +112,8 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
     assert document["info"]["title"] == "우리 사이 API"
     assert "resultType" not in document
     assert set(document["paths"]) == {
+        "/api/v1/diary-entries/",
+        "/api/v1/diary-entries/{diary_entry_id}/",
         "/api/v1/media-uploads/",
         "/api/v1/media-uploads/{upload_id}/complete/",
         "/api/v1/media-uploads/{upload_id}/discard/",

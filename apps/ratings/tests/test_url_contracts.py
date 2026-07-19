@@ -21,6 +21,11 @@ def test_score_change_thread_url_name_and_path_are_stable():
     assert resolve(public_path).url_name == "score-change-thread"
 
 
+def test_diary_url_name_and_path_are_stable():
+    assert reverse("diary") == "/diary/"
+    assert resolve("/diary/").url_name == "diary"
+
+
 @pytest.mark.parametrize(
     "retired_path",
     (

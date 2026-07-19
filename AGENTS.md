@@ -91,14 +91,18 @@ make check
 
 - Python import 경로는 `apps.ratings`지만 Django app label은 `ratings`다. 기존
   migration label, content type, admin URL과 명시적 테이블명 `participant`,
-  `relationship_score`, `score_change`, `score_change_comment`, `push_device`를 우연히
-  바꾸지 않는다.
+  `diary_entry`, `relationship_score`, `score_change`, `score_change_comment`,
+  `push_device`를 우연히 바꾸지 않는다.
 - 참가자는 정확히 두 slot으로 구성된다. 관계 점수는 방향성이 있고 0~100이며,
   한 참가자는 자신의 outgoing score만 바꾼다.
 - 점수 변경은 잠금이 포함된 원자적 트랜잭션으로 현재 점수와 이력을 함께 기록한다.
   `ScoreChange` 이력은 수정·삭제 불가다.
 - 댓글은 하나의 `ScoreChange`에 속한 평평한 시간순 대화이며 작성자는 해당 관계의
   두 참가자 중 로그인 세션으로 결정된 한 명이어야 한다.
+- 공유 일기는 점수 변경과 독립된 `DiaryEntry`이며 두 참가자 모두 읽을 수 있다.
+  작성자는 로그인 세션에서 결정하고 자신의 글만 수정·삭제할 수 있다. 게시 시각은
+  서버가 `created_at`으로 기록하며 클라이언트가 별도 날짜를 지정하지 않는다. 빈
+  본문은 저장하지 않는다.
 - 푸시 알림은 DB commit 뒤에 전송하고, 외부 전송 실패가 점수 변경이나 댓글 작성을
   되돌리면 안 된다. 알림 본문에 점수·이유·댓글·참가자 같은 사적 정보를 추가하지
   않는다.

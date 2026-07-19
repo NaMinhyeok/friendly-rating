@@ -15,6 +15,7 @@ from rest_framework import serializers
 from rest_framework.settings import api_settings
 
 from ..models import (
+    DiaryEntry,
     MediaAttachment,
     Participant,
     RelationshipScore,
@@ -33,6 +34,11 @@ class DeltaScoreChangeCommand:
     delta: int
     reason: str
     media_upload_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DiaryEntryCommand:
+    content: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +176,71 @@ class StrictRequestSerializer(serializers.Serializer[object]):
         return super().to_internal_value(data)
 
 
+class DiaryEntryCreateRequestSerializer(StrictRequestSerializer):
+    content = StrictCharField(
+        max_length=1000,
+        trim_whitespace=True,
+    )
+
+    def to_command(self) -> DiaryEntryCommand:
+        content = self.validated_data.get("content")
+        if not isinstance(content, str):
+            raise RuntimeError("Validated diary content is not a string.")
+        return DiaryEntryCommand(content=content)
+
+
+class DiaryEntryUpdateRequestSerializer(StrictRequestSerializer):
+    content = StrictCharField(
+        max_length=1000,
+        trim_whitespace=True,
+    )
+
+    def to_command(self) -> DiaryEntryCommand:
+        content = self.validated_data.get("content")
+        if not isinstance(content, str):
+            raise RuntimeError("Validated diary content is not a string.")
+        return DiaryEntryCommand(content=content)
+
+
+def _diary_entry_request_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1000,
+            },
+        },
+        "required": ["content"],
+    }
+
+
+class DiaryEntryCreateRequestSerializerExtension(OpenApiSerializerExtension):
+    target_class = DiaryEntryCreateRequestSerializer
+
+    @override
+    def map_serializer(
+        self,
+        auto_schema: "AutoSchema",
+        direction: Direction,
+    ) -> dict[str, Any]:
+        return _diary_entry_request_schema()
+
+
+class DiaryEntryUpdateRequestSerializerExtension(OpenApiSerializerExtension):
+    target_class = DiaryEntryUpdateRequestSerializer
+
+    @override
+    def map_serializer(
+        self,
+        auto_schema: "AutoSchema",
+        direction: Direction,
+    ) -> dict[str, Any]:
+        return _diary_entry_request_schema()
+
+
 class ScoreChangeRequestSerializer(StrictRequestSerializer):
     delta = ScoreDeltaField(required=False, min_value=-100, max_value=100)
     targetScore = ScoreTargetField(required=False, min_value=0, max_value=100)
@@ -244,6 +315,10 @@ class ScoreChangeRequestSerializer(StrictRequestSerializer):
 
 
 class ScoreChangePageQuerySerializer(StrictRequestSerializer):
+    pageNumber = serializers.IntegerField(default=1, min_value=1)
+
+
+class DiaryEntryPageQuerySerializer(StrictRequestSerializer):
     pageNumber = serializers.IntegerField(default=1, min_value=1)
 
 
@@ -641,6 +716,23 @@ class ParticipantSummarySerializer(serializers.Serializer[Participant]):
     )
 
 
+class DiaryEntryDataSerializer(serializers.Serializer[DiaryEntry]):
+    id = serializers.IntegerField(read_only=True, min_value=1)
+    author = ParticipantSummarySerializer(read_only=True)
+    content = serializers.CharField(read_only=True, max_length=1000)
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+    updatedAt = serializers.DateTimeField(
+        source="updated_at",
+        read_only=True,
+        allow_null=True,
+    )
+    isMine = serializers.SerializerMethodField()
+
+    def get_isMine(self, entry: DiaryEntry) -> bool:
+        participant_id = self.context.get("participant_id")
+        return entry.author_id == participant_id
+
+
 class ScoreChangeHistoryDataSerializer(serializers.Serializer[ScoreChange]):
     id = serializers.IntegerField(read_only=True, min_value=1)
     sourceParticipant = ParticipantSummarySerializer(
@@ -755,6 +847,14 @@ class PageNumberPagingSerializer(serializers.Serializer[object]):
 class ScoreChangePageDataSerializer(serializers.Serializer[object]):
     results = serializers.ListField(
         child=ScoreChangeHistoryDataSerializer(),
+        max_length=20,
+    )
+    paging = PageNumberPagingSerializer()
+
+
+class DiaryEntryPageDataSerializer(serializers.Serializer[object]):
+    results = serializers.ListField(
+        child=DiaryEntryDataSerializer(),
         max_length=20,
     )
     paging = PageNumberPagingSerializer()
@@ -1038,6 +1138,22 @@ class ReadForbiddenErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     )
 
 
+class MutationForbiddenErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = PolymorphicProxySerializer(
+        component_name="MutationForbiddenApiError",
+        serializers={
+            ErrorCode.AUTHENTICATION_REQUIRED.value: (
+                AuthenticationRequiredApiErrorSerializer
+            ),
+            ErrorCode.CSRF_FAILED.value: CsrfFailedApiErrorSerializer,
+            ErrorCode.PARTICIPANT_REQUIRED.value: ParticipantRequiredApiErrorSerializer,
+            ErrorCode.PERMISSION_DENIED.value: PermissionDeniedApiErrorSerializer,
+        },
+        resource_type_field_name="errorCode",
+        many=False,
+    )
+
+
 class MediaForbiddenErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     error = PolymorphicProxySerializer(
         component_name="MediaForbiddenApiError",
@@ -1093,6 +1209,24 @@ class InternalServerErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
 
 class MediaUploadsUnavailableErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     error = MediaUploadsUnavailableApiErrorSerializer()
+
+
+class DiaryEntrySuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = DiaryEntryDataSerializer()
+
+
+class DiaryEntryPageSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = DiaryEntryPageDataSerializer()
+
+
+class DiaryEntryDeletedSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = NullOnlyField()
 
 
 class ScoreChangeSuccessEnvelopeSerializer(serializers.Serializer[object]):

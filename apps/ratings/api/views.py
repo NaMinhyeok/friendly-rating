@@ -23,6 +23,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..models import (
+    DiaryEntry,
     MediaAttachment,
     Participant,
     RelationshipScore,
@@ -40,11 +41,14 @@ from ..services import (
     add_score_change_comment,
     change_relationship_score,
     complete_media_upload,
+    create_diary_entry,
+    delete_diary_entry,
     discard_media_upload,
     initiate_media_upload,
     register_participant_push_device,
     set_relationship_score,
     unregister_participant_push_device,
+    update_diary_entry,
 )
 from .contracts import ErrorCode, ErrorType
 from .exceptions import (
@@ -58,6 +62,14 @@ from .serializers import (
     CompletedMediaUploadDataSerializer,
     CompletedMediaUploadSuccessEnvelopeSerializer,
     DeltaScoreChangeCommand,
+    DiaryEntryCreateRequestSerializer,
+    DiaryEntryDataSerializer,
+    DiaryEntryDeletedSuccessEnvelopeSerializer,
+    DiaryEntryPageDataSerializer,
+    DiaryEntryPageQuerySerializer,
+    DiaryEntryPageSuccessEnvelopeSerializer,
+    DiaryEntrySuccessEnvelopeSerializer,
+    DiaryEntryUpdateRequestSerializer,
     ForbiddenErrorEnvelopeSerializer,
     InitiatedMediaUploadDataSerializer,
     InternalServerErrorEnvelopeSerializer,
@@ -70,6 +82,7 @@ from .serializers import (
     MediaUploadInitiatedSuccessEnvelopeSerializer,
     MediaUploadInitiateRequestSerializer,
     MediaUploadsUnavailableErrorEnvelopeSerializer,
+    MutationForbiddenErrorEnvelopeSerializer,
     NotAcceptableErrorEnvelopeSerializer,
     NotFoundErrorEnvelopeSerializer,
     PushDeviceRegisteredSuccessEnvelopeSerializer,
@@ -102,6 +115,7 @@ CSRF_HEADER_PARAMETER = OpenApiParameter(
     description="렌더링된 페이지 또는 CSRF 쿠키에서 얻은 토큰",
 )
 SCORE_CHANGE_PAGE_SIZE = 20
+DIARY_ENTRY_PAGE_SIZE = 20
 
 
 class MediaUploadConflict(ApiProblem):
@@ -132,11 +146,32 @@ class ScoreChangeAutoSchema(AutoSchema):
         return request_body
 
 
+class DiaryEntryAutoSchema(AutoSchema):
+    @override
+    def _get_request_body(
+        self,
+        direction: str = "request",
+    ):
+        request_body = super()._get_request_body(direction)
+        if self.method in {"POST", "PATCH"} and request_body is not None:
+            cast(dict[str, object], request_body)["required"] = True
+        return request_body
+
+
 def _participant_for_request(request: Request) -> Participant:
     try:
         return Participant.objects.get(user_id=request.user.pk)
     except Participant.DoesNotExist as error:
         raise ParticipantRequired() from error
+
+
+def _private_no_store(response: Response) -> Response:
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+def _raise_diary_validation_error(error: DjangoValidationError) -> Never:
+    raise ValidationError(error.messages) from error
 
 
 def _ensure_media_uploads_available() -> None:
@@ -195,6 +230,195 @@ def _score_changes_for_participant(
         )
         .annotate(comment_count=Count("comments"))
     )
+
+
+class DiaryEntryListView(APIView):
+    schema = DiaryEntryAutoSchema()
+
+    @extend_schema(
+        operation_id="listDiaryEntries",
+        summary="공유 일기 목록 조회",
+        description=(
+            "두 참가자가 공유하는 일기를 작성 시각의 최신순으로 조회합니다. "
+            "페이지 크기는 20개로 고정됩니다."
+        ),
+        tags=("diaryEntries",),
+        parameters=[DiaryEntryPageQuerySerializer],
+        responses={
+            200: DiaryEntryPageSuccessEnvelopeSerializer,
+            400: InvalidInputErrorEnvelopeSerializer,
+            403: ReadForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def get(self, request: Request) -> Response:
+        participant = _participant_for_request(request)
+        query_serializer = DiaryEntryPageQuerySerializer(
+            data=dict(request.query_params.items())
+        )
+        query_serializer.is_valid(raise_exception=True)
+        page_number = query_serializer.validated_data.get("pageNumber")
+        if not isinstance(page_number, int) or isinstance(page_number, bool):
+            raise RuntimeError("Validated page number is not an integer.")
+
+        entries = DiaryEntry.objects.select_related("author").order_by(
+            "-created_at",
+            "-pk",
+        )
+        paginator = Paginator(entries, DIARY_ENTRY_PAGE_SIZE)
+        try:
+            page = paginator.page(page_number)
+        except EmptyPage as error:
+            raise NotFound() from error
+
+        serializer = DiaryEntryPageDataSerializer(
+            {
+                "results": list(page.object_list),
+                "paging": {
+                    "pageNumber": page.number,
+                    "pageSize": DIARY_ENTRY_PAGE_SIZE,
+                    "hasNext": page.has_next(),
+                    "totalCount": paginator.count,
+                },
+            },
+            context={"participant_id": participant.pk},
+        )
+        return _private_no_store(Response(serializer.data))
+
+    @extend_schema(
+        operation_id="createDiaryEntry",
+        summary="공유 일기 작성",
+        description=(
+            "현재 참가자를 작성자로 하여 공유 일기를 작성합니다. 작성자는 요청 "
+            "본문이 아니라 로그인 세션에서 결정됩니다."
+        ),
+        tags=("diaryEntries",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=DiaryEntryCreateRequestSerializer,
+        responses={
+            201: DiaryEntrySuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: ForbiddenErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request) -> Response:
+        participant = _participant_for_request(request)
+        request_serializer = DiaryEntryCreateRequestSerializer(data=request.data)
+        request_serializer.is_valid(raise_exception=True)
+        command = request_serializer.to_command()
+        try:
+            entry = create_diary_entry(
+                author=participant,
+                content=command.content,
+            )
+        except DjangoValidationError as error:
+            _raise_diary_validation_error(error)
+
+        response_serializer = DiaryEntryDataSerializer(
+            entry,
+            context={"participant_id": participant.pk},
+        )
+        return _private_no_store(
+            Response(response_serializer.data, status=status.HTTP_201_CREATED)
+        )
+
+
+class DiaryEntryDetailView(APIView):
+    schema = DiaryEntryAutoSchema()
+
+    @staticmethod
+    def _entry(diary_entry_id: int) -> DiaryEntry:
+        return get_object_or_404(
+            DiaryEntry.objects.select_related("author"),
+            pk=diary_entry_id,
+        )
+
+    @extend_schema(
+        operation_id="retrieveDiaryEntry",
+        summary="공유 일기 조회",
+        description="두 참가자가 공유하는 일기 한 편을 조회합니다.",
+        tags=("diaryEntries",),
+        responses={
+            200: DiaryEntrySuccessEnvelopeSerializer,
+            403: ReadForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def get(self, request: Request, diary_entry_id: int) -> Response:
+        participant = _participant_for_request(request)
+        entry = self._entry(diary_entry_id)
+        serializer = DiaryEntryDataSerializer(
+            entry,
+            context={"participant_id": participant.pk},
+        )
+        return _private_no_store(Response(serializer.data))
+
+    @extend_schema(
+        operation_id="updateDiaryEntry",
+        summary="공유 일기 수정",
+        description="작성자만 일기 내용을 수정할 수 있습니다.",
+        tags=("diaryEntries",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=DiaryEntryUpdateRequestSerializer,
+        responses={
+            200: DiaryEntrySuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: MutationForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def patch(self, request: Request, diary_entry_id: int) -> Response:
+        participant = _participant_for_request(request)
+        entry = self._entry(diary_entry_id)
+        request_serializer = DiaryEntryUpdateRequestSerializer(data=request.data)
+        request_serializer.is_valid(raise_exception=True)
+        command = request_serializer.to_command()
+        try:
+            updated_entry = update_diary_entry(
+                entry=entry,
+                author=participant,
+                content=command.content,
+            )
+        except DjangoValidationError as error:
+            _raise_diary_validation_error(error)
+
+        response_serializer = DiaryEntryDataSerializer(
+            updated_entry,
+            context={"participant_id": participant.pk},
+        )
+        return _private_no_store(Response(response_serializer.data))
+
+    @extend_schema(
+        operation_id="deleteDiaryEntry",
+        summary="공유 일기 삭제",
+        description="작성자만 자신이 작성한 공유 일기를 삭제할 수 있습니다.",
+        tags=("diaryEntries",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        responses={
+            200: DiaryEntryDeletedSuccessEnvelopeSerializer,
+            403: MutationForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def delete(self, request: Request, diary_entry_id: int) -> Response:
+        participant = _participant_for_request(request)
+        entry = self._entry(diary_entry_id)
+        delete_diary_entry(entry=entry, author=participant)
+        return _private_no_store(Response(None))
 
 
 class RelationshipScoreListView(APIView):

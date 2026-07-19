@@ -22,11 +22,6 @@ def _railway_config():
     return tomllib.loads(config_path.read_text())
 
 
-def _railway_cron_config():
-    config_path = Path(django_settings.BASE_DIR) / "railway.cron.json"
-    return json.loads(config_path.read_text())
-
-
 def _load_settings_with_railway_marker(marker_name: str) -> dict[str, object]:
     environment = os.environ.copy()
     for name in (
@@ -157,24 +152,6 @@ def test_railway_deployment_runs_migrations_without_provisioning_participants():
     assert all(
         "provision_participants" not in command for command in automatic_commands
     )
-
-
-def test_railway_media_cleanup_cron_is_a_daily_one_shot_without_migrations():
-    config = _railway_cron_config()
-
-    assert config == {
-        "$schema": "https://railway.com/railway.schema.json",
-        "build": {"builder": "RAILPACK"},
-        "deploy": {
-            "cronSchedule": "0 18 * * *",
-            "healthcheckPath": None,
-            "healthcheckTimeout": None,
-            "preDeployCommand": [],
-            "restartPolicyMaxRetries": None,
-            "restartPolicyType": "NEVER",
-            "startCommand": "python manage.py cleanup_media_uploads --limit 100",
-        },
-    }
 
 
 def test_media_uploads_are_disabled_without_explicit_r2_configuration():

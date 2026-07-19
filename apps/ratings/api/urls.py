@@ -2,6 +2,8 @@ from django.urls import path
 
 from .views import (
     ApiNotFoundView,
+    DiaryEntryDetailView,
+    DiaryEntryListView,
     MediaUploadCompleteView,
     MediaUploadDiscardView,
     MediaUploadInitiateView,
@@ -16,6 +18,16 @@ from .views import (
 app_name = "ratings-api"
 
 urlpatterns = [
+    path(
+        "diary-entries/",
+        DiaryEntryListView.as_view(),
+        name="diary-entry-list",
+    ),
+    path(
+        "diary-entries/<int:diary_entry_id>/",
+        DiaryEntryDetailView.as_view(),
+        name="diary-entry-detail",
+    ),
     path(
         "media-uploads/",
         MediaUploadInitiateView.as_view(),
