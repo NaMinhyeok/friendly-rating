@@ -298,6 +298,11 @@ SPECTACULAR_SETTINGS = {
     "VERSION": "1.0.0",
     "OAS_VERSION": "3.1.0",
     "COMPONENT_SPLIT_REQUEST": True,
+    "ENUM_NAME_OVERRIDES": {
+        "ErrorResultType": ["ERROR"],
+        "RequestErrorType": ["REQUEST"],
+        "AuthenticationErrorType": ["AUTHENTICATION"],
+    },
     "SERVE_INCLUDE_SCHEMA": False,
     "SCHEMA_PATH_PREFIX": r"/api/v1",
 }

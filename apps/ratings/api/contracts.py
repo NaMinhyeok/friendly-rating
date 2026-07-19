@@ -94,18 +94,20 @@ def is_success_envelope(value: object) -> TypeGuard[SuccessEnvelope]:
     if not isinstance(value, Mapping):
         return False
     return (
-        value.get("resultType") == ResultType.SUCCESS.value
-        and "error" in value
+        set(value) == {"resultType", "error", "success"}
+        and value.get("resultType") == ResultType.SUCCESS.value
         and value.get("error") is None
-        and "success" in value
     )
 
 
 def is_error_envelope(value: object) -> TypeGuard[ErrorEnvelope]:
     if not isinstance(value, Mapping):
         return False
+    error = value.get("error")
     return (
-        value.get("resultType") == ResultType.ERROR.value
-        and isinstance(value.get("error"), Mapping)
-        and value.get("success", object()) is None
+        set(value) == {"resultType", "error", "success"}
+        and value.get("resultType") == ResultType.ERROR.value
+        and isinstance(error, Mapping)
+        and set(error) == {"errorType", "errorCode", "reason", "details"}
+        and value.get("success") is None
     )

@@ -240,6 +240,14 @@ def api_exception_handler(
             status=500,
         )
 
+    if response.status_code >= 500:
+        response.data = error_envelope(
+            error_type=ErrorType.SERVER,
+            error_code=ErrorCode.INTERNAL_SERVER_ERROR,
+            reason="서버에서 요청을 처리하지 못했습니다.",
+        )
+        return response
+
     error_type, error_code, reason, details = _error_contract(exception)
     response.data = error_envelope(
         error_type=error_type,

@@ -3,8 +3,13 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, override
 
 from drf_spectacular.extensions import OpenApiSerializerExtension
-from drf_spectacular.utils import Direction, extend_schema_field
+from drf_spectacular.utils import (
+    Direction,
+    PolymorphicProxySerializer,
+    extend_schema_field,
+)
 from rest_framework import serializers
+from rest_framework.settings import api_settings
 
 from ..models import ScoreChange
 from .contracts import ErrorCode, ErrorType, ResultType
@@ -30,6 +35,8 @@ class ScoreChangeCommand:
 class ScoreDeltaField(serializers.IntegerField):
     @override
     def to_internal_value(self, data: object) -> int:
+        if isinstance(data, float) and data.is_integer():
+            data = int(data)
         if isinstance(data, bool) or not isinstance(data, int):
             self.fail("invalid")
         return super().to_internal_value(data)
@@ -40,10 +47,20 @@ class StrictCharField(serializers.CharField):
     def to_internal_value(self, data: object) -> str:
         if not isinstance(data, str):
             self.fail("invalid")
+        if self.max_length is not None and len(data) > self.max_length:
+            self.fail(
+                "max_length",
+                max_length=self.max_length,
+                length=len(data),
+            )
         return super().to_internal_value(data)
 
 
 class ScoreChangeRequestSerializer(serializers.Serializer[object]):
+    default_error_messages = {
+        "invalid": "JSON 객체를 입력해 주세요.",
+    }
+
     delta = ScoreDeltaField(min_value=-100, max_value=100)
     reason = StrictCharField(
         required=False,
@@ -52,6 +69,15 @@ class ScoreChangeRequestSerializer(serializers.Serializer[object]):
         max_length=200,
         trim_whitespace=True,
     )
+
+    @override
+    def run_validation(self, data: Any = serializers.empty) -> Any:
+        if data is None:
+            raise serializers.ValidationError(
+                {api_settings.NON_FIELD_ERRORS_KEY: ["JSON 객체를 입력해 주세요."]},
+                code="invalid",
+            )
+        return super().run_validation(data)
 
     @override
     def to_internal_value(self, data: object) -> dict[str, Any]:
@@ -140,11 +166,75 @@ class ErrorDetailSerializer(serializers.Serializer[object]):
     message = serializers.CharField()
 
 
-class ApiErrorSerializer(serializers.Serializer[object]):
-    errorType = serializers.ChoiceField(choices=tuple(ErrorType))
-    errorCode = serializers.ChoiceField(choices=tuple(ErrorCode))
+class EmptyDetailsApiErrorSerializer(serializers.Serializer[object]):
     reason = serializers.CharField()
-    details = ErrorDetailSerializer(many=True)
+    details = serializers.ListField(
+        child=ErrorDetailSerializer(),
+        max_length=0,
+    )
+
+
+class InvalidInputApiErrorSerializer(serializers.Serializer[object]):
+    errorType = serializers.ChoiceField(choices=(ErrorType.VALIDATION.value,))
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.INVALID_INPUT.value,))
+    reason = serializers.CharField()
+    details = serializers.ListField(
+        child=ErrorDetailSerializer(),
+        min_length=1,
+    )
+
+
+class InvalidJsonApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.REQUEST.value,))
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.INVALID_JSON.value,))
+
+
+class AuthenticationRequiredApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.AUTHENTICATION.value,))
+    errorCode = serializers.ChoiceField(
+        choices=(ErrorCode.AUTHENTICATION_REQUIRED.value,)
+    )
+
+
+class CsrfFailedApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.AUTHENTICATION.value,))
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.CSRF_FAILED.value,))
+
+
+class ParticipantRequiredApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.AUTHORIZATION.value,))
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.PARTICIPANT_REQUIRED.value,))
+
+
+class NotAcceptableApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.REQUEST.value,))
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.NOT_ACCEPTABLE.value,))
+
+
+class ScoreOutOfRangeApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.CONFLICT.value,))
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.SCORE_OUT_OF_RANGE.value,))
+
+
+class RequestBodyTooLargeApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.REQUEST.value,))
+    errorCode = serializers.ChoiceField(
+        choices=(ErrorCode.REQUEST_BODY_TOO_LARGE.value,)
+    )
+
+
+class UnsupportedMediaTypeApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.REQUEST.value,))
+    errorCode = serializers.ChoiceField(
+        choices=(ErrorCode.UNSUPPORTED_MEDIA_TYPE.value,)
+    )
+
+
+class InternalServerApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.SERVER.value,))
+    errorCode = serializers.ChoiceField(
+        choices=(ErrorCode.INTERNAL_SERVER_ERROR.value,)
+    )
 
 
 @extend_schema_field({"type": "null"})
@@ -165,10 +255,56 @@ class NullOnlyField(serializers.Field[None, object, None, object]):
         return None
 
 
-class ErrorEnvelopeSerializer(serializers.Serializer[object]):
+class ErrorEnvelopeBaseSerializer(serializers.Serializer[object]):
     resultType = serializers.ChoiceField(choices=(ResultType.ERROR.value,))
-    error = ApiErrorSerializer()
     success = NullOnlyField()
+
+
+class BadRequestErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = PolymorphicProxySerializer(
+        component_name="BadRequestApiError",
+        serializers={
+            ErrorCode.INVALID_JSON.value: InvalidJsonApiErrorSerializer,
+            ErrorCode.INVALID_INPUT.value: InvalidInputApiErrorSerializer,
+        },
+        resource_type_field_name="errorCode",
+        many=False,
+    )
+
+
+class ForbiddenErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = PolymorphicProxySerializer(
+        component_name="ForbiddenApiError",
+        serializers={
+            ErrorCode.AUTHENTICATION_REQUIRED.value: (
+                AuthenticationRequiredApiErrorSerializer
+            ),
+            ErrorCode.CSRF_FAILED.value: CsrfFailedApiErrorSerializer,
+            ErrorCode.PARTICIPANT_REQUIRED.value: ParticipantRequiredApiErrorSerializer,
+        },
+        resource_type_field_name="errorCode",
+        many=False,
+    )
+
+
+class NotAcceptableErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = NotAcceptableApiErrorSerializer()
+
+
+class ScoreOutOfRangeErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = ScoreOutOfRangeApiErrorSerializer()
+
+
+class RequestBodyTooLargeErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = RequestBodyTooLargeApiErrorSerializer()
+
+
+class UnsupportedMediaTypeErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = UnsupportedMediaTypeApiErrorSerializer()
+
+
+class InternalServerErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = InternalServerApiErrorSerializer()
 
 
 class ScoreChangeSuccessEnvelopeSerializer(serializers.Serializer[object]):

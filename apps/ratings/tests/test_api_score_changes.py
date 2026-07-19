@@ -9,6 +9,7 @@ from django.contrib.auth.models import User
 from django.test import Client, override_settings
 from django.urls import resolve, reverse
 from django.utils.dateparse import parse_datetime
+from rest_framework.exceptions import APIException
 
 from ..models import ScoreChange
 from .http_helpers import csrf_token_from_form
@@ -103,6 +104,41 @@ def test_score_change_api_url_name_and_path_are_stable():
     assert resolve(path).namespace == "api-v1"
 
 
+@pytest.mark.parametrize(
+    ("method", "path"),
+    (
+        ("get", "/api/v1/does-not-exist/"),
+        ("post", "/api/v1/score-changes"),
+    ),
+)
+@override_settings(DEBUG=False)
+def test_unknown_api_paths_stay_in_the_json_envelope(
+    participant_pair,
+    method,
+    path,
+):
+    client = Client(enforce_csrf_checks=True)
+
+    if method == "post":
+        response = client.post(
+            path,
+            data=json.dumps({"delta": 1}),
+            content_type="application/json",
+            HTTP_ACCEPT="application/json",
+        )
+    else:
+        response = client.get(path, HTTP_ACCEPT="application/json")
+
+    _assert_error_response(
+        response,
+        status_code=404,
+        error_type="NOT_FOUND",
+        error_code="NOT_FOUND",
+    )
+    assert "Location" not in response.headers
+    _assert_no_score_writes(participant_pair)
+
+
 def test_participant_can_change_their_score_with_rendered_csrf_and_same_origin(
     participant_pair,
 ):
@@ -163,6 +199,19 @@ def test_second_participant_changes_only_their_outgoing_score(participant_pair):
     assert change.reason == ""
     assert change.resulting_score == 7
     assert response.json()["success"]["reason"] == ""
+
+
+def test_json_number_with_integral_value_matches_openapi_integer(participant_pair):
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _post_json(client, {"delta": 1.0}, csrf_token=csrf_token)
+
+    participant_pair.first_to_second.refresh_from_db()
+    change = ScoreChange.objects.get()
+    assert response.status_code == 201
+    assert response.json()["success"]["delta"] == 1
+    assert participant_pair.first_to_second.current_score == 1
+    assert change.delta == 1
 
 
 def test_anonymous_request_returns_json_authentication_error_without_writing(
@@ -321,12 +370,14 @@ def test_score_change_api_only_renders_json_without_writing(participant_pair):
 @pytest.mark.parametrize(
     ("payload", "expected_field", "expected_code"),
     (
+        (None, None, "INVALID_TYPE"),
         ({}, "delta", "REQUIRED"),
         ({"delta": None}, "delta", "INVALID_TYPE"),
         ({"delta": 0}, "delta", "NON_ZERO"),
         ({"delta": 101}, "delta", "MAX_VALUE"),
         ({"delta": -101}, "delta", "MIN_VALUE"),
         ({"delta": 1, "reason": "가" * 201}, "reason", "MAX_LENGTH"),
+        ({"delta": 1, "reason": " " + "가" * 200}, "reason", "MAX_LENGTH"),
         ({"delta": True}, "delta", "INVALID_TYPE"),
         ({"delta": "1"}, "delta", "INVALID_TYPE"),
         ({"delta": 1.5}, "delta", "INVALID_TYPE"),
@@ -354,10 +405,13 @@ def test_score_change_api_strictly_validates_json_without_writing(
     )
     error = body["error"]
     assert isinstance(error, dict)
-    assert any(
-        detail["field"] == expected_field and detail["code"] == expected_code
+    matching_detail = next(
+        detail
         for detail in error["details"]
+        if detail["field"] == expected_field and detail["code"] == expected_code
     )
+    if payload is None or isinstance(payload, list):
+        assert matching_detail["message"] == "JSON 객체를 입력해 주세요."
     _assert_no_score_writes(participant_pair)
 
 
@@ -405,13 +459,23 @@ def test_score_change_api_rejects_request_body_over_four_kibibytes_without_writi
     _assert_no_score_writes(participant_pair)
 
 
+@pytest.mark.parametrize(
+    "injected_error",
+    (
+        RuntimeError("sensitive internal detail"),
+        APIException("sensitive internal detail"),
+    ),
+)
 @override_settings(DEBUG=False)
-def test_unexpected_api_error_is_generic_and_does_not_write(participant_pair):
+def test_unexpected_api_error_is_generic_and_does_not_write(
+    participant_pair,
+    injected_error,
+):
     client, csrf_token = _participant_client(participant_pair.first)
 
     with patch(
         "apps.ratings.api.views.change_relationship_score",
-        side_effect=RuntimeError("sensitive internal detail"),
+        side_effect=injected_error,
     ):
         response = _post_json(client, {"delta": 1}, csrf_token=csrf_token)
 

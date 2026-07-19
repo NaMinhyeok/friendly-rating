@@ -1,6 +1,10 @@
+from typing import Never, override
+
 from django.core.exceptions import ValidationError as DjangoValidationError
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
+from rest_framework.exceptions import NotFound
+from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -9,10 +13,16 @@ from ..models import Participant
 from ..services import change_relationship_score
 from .exceptions import ParticipantRequired, ScoreOutOfRange
 from .serializers import (
-    ErrorEnvelopeSerializer,
+    BadRequestErrorEnvelopeSerializer,
+    ForbiddenErrorEnvelopeSerializer,
+    InternalServerErrorEnvelopeSerializer,
+    NotAcceptableErrorEnvelopeSerializer,
+    RequestBodyTooLargeErrorEnvelopeSerializer,
     ScoreChangeDataSerializer,
     ScoreChangeRequestSerializer,
     ScoreChangeSuccessEnvelopeSerializer,
+    ScoreOutOfRangeErrorEnvelopeSerializer,
+    UnsupportedMediaTypeErrorEnvelopeSerializer,
 )
 
 
@@ -45,14 +55,13 @@ class ScoreChangeListView(APIView):
         request=ScoreChangeRequestSerializer,
         responses={
             201: ScoreChangeSuccessEnvelopeSerializer,
-            400: ErrorEnvelopeSerializer,
-            403: ErrorEnvelopeSerializer,
-            405: ErrorEnvelopeSerializer,
-            406: ErrorEnvelopeSerializer,
-            409: ErrorEnvelopeSerializer,
-            413: ErrorEnvelopeSerializer,
-            415: ErrorEnvelopeSerializer,
-            500: ErrorEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: ForbiddenErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            409: ScoreOutOfRangeErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
         },
     )
     def post(self, request: Request) -> Response:
@@ -73,3 +82,27 @@ class ScoreChangeListView(APIView):
 
         response_serializer = ScoreChangeDataSerializer(change)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+@extend_schema(exclude=True)
+class ApiNotFoundView(APIView):
+    authentication_classes = ()
+    permission_classes = (AllowAny,)
+
+    @override
+    def http_method_not_allowed(
+        self,
+        request: Request,
+        *args: object,
+        **kwargs: object,
+    ) -> Never:
+        raise NotFound()
+
+    @override
+    def options(
+        self,
+        request: Request,
+        *args: object,
+        **kwargs: object,
+    ) -> Never:
+        raise NotFound()

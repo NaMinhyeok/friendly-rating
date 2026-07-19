@@ -2,6 +2,33 @@ from collections.abc import Mapping
 
 from django.urls import reverse
 
+ERROR_RESPONSE_COMPONENTS = {
+    "400": "BadRequestErrorEnvelope",
+    "403": "ForbiddenErrorEnvelope",
+    "406": "NotAcceptableErrorEnvelope",
+    "409": "ScoreOutOfRangeErrorEnvelope",
+    "413": "RequestBodyTooLargeErrorEnvelope",
+    "415": "UnsupportedMediaTypeErrorEnvelope",
+    "500": "InternalServerErrorEnvelope",
+}
+
+ERROR_PAIRS = {
+    "BadRequestErrorEnvelope": {
+        ("REQUEST", "INVALID_JSON"),
+        ("VALIDATION", "INVALID_INPUT"),
+    },
+    "ForbiddenErrorEnvelope": {
+        ("AUTHENTICATION", "AUTHENTICATION_REQUIRED"),
+        ("AUTHENTICATION", "CSRF_FAILED"),
+        ("AUTHORIZATION", "PARTICIPANT_REQUIRED"),
+    },
+    "NotAcceptableErrorEnvelope": {("REQUEST", "NOT_ACCEPTABLE")},
+    "ScoreOutOfRangeErrorEnvelope": {("CONFLICT", "SCORE_OUT_OF_RANGE")},
+    "RequestBodyTooLargeErrorEnvelope": {("REQUEST", "REQUEST_BODY_TOO_LARGE")},
+    "UnsupportedMediaTypeErrorEnvelope": {("REQUEST", "UNSUPPORTED_MEDIA_TYPE")},
+    "InternalServerErrorEnvelope": {("SERVER", "INTERNAL_SERVER_ERROR")},
+}
+
 
 def _resolve_schema(document, schema):
     resolved = schema
@@ -39,6 +66,16 @@ def _enum_values(document, schema) -> list[str]:
     values = resolved.get("enum")
     assert isinstance(values, list)
     return values
+
+
+def _error_variants(document, envelope_schema) -> list[Mapping]:
+    envelope = _resolve_schema(document, envelope_schema)
+    error_schema = _resolve_schema(document, envelope["properties"]["error"])
+    members = error_schema.get("oneOf")
+    if members is None:
+        return [error_schema]
+    assert isinstance(members, list)
+    return [_resolve_schema(document, member) for member in members]
 
 
 def test_openapi_schema_is_public_standard_oas_31_document(client):
@@ -95,7 +132,6 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
         "201",
         "400",
         "403",
-        "405",
         "406",
         "409",
         "413",
@@ -106,9 +142,9 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
     assert success_response_schema == {
         "$ref": "#/components/schemas/ScoreChangeSuccessEnvelope"
     }
-    for status_code in ("400", "403", "405", "406", "409", "413", "415", "500"):
+    for status_code, component_name in ERROR_RESPONSE_COMPONENTS.items():
         assert responses[status_code]["content"]["application/json"]["schema"] == {
-            "$ref": "#/components/schemas/ErrorEnvelope"
+            "$ref": f"#/components/schemas/{component_name}"
         }
 
     assert document["components"]["securitySchemes"]["cookieAuth"] == {
@@ -125,7 +161,6 @@ def test_openapi_envelopes_are_exclusive_and_fields_match_runtime_contract(clien
     ).json()
     schemas = document["components"]["schemas"]
     success_envelope = schemas["ScoreChangeSuccessEnvelope"]
-    error_envelope = schemas["ErrorEnvelope"]
 
     assert set(success_envelope["required"]) == {"resultType", "error", "success"}
     assert _enum_values(
@@ -136,16 +171,6 @@ def test_openapi_envelopes_are_exclusive_and_fields_match_runtime_contract(clien
     assert success_envelope["properties"]["success"] == {
         "$ref": "#/components/schemas/ScoreChangeData"
     }
-
-    assert set(error_envelope["required"]) == {"resultType", "error", "success"}
-    assert _enum_values(
-        document,
-        error_envelope["properties"]["resultType"],
-    ) == ["ERROR"]
-    assert error_envelope["properties"]["error"] == {
-        "$ref": "#/components/schemas/ApiError"
-    }
-    assert _schema_types(document, error_envelope["properties"]["success"]) == {"null"}
 
     score_change = schemas["ScoreChangeData"]
     assert set(score_change["required"]) == {
@@ -170,50 +195,54 @@ def test_openapi_envelopes_are_exclusive_and_fields_match_runtime_contract(clien
     assert score_change["properties"]["resultingScore"]["minimum"] == 0
     assert score_change["properties"]["resultingScore"]["maximum"] == 100
 
-    api_error = schemas["ApiError"]
-    assert set(api_error["required"]) == {
-        "errorType",
-        "errorCode",
-        "reason",
-        "details",
-    }
-    assert set(api_error["properties"]) == {
-        "errorType",
-        "errorCode",
-        "reason",
-        "details",
-    }
-    assert set(_enum_values(document, api_error["properties"]["errorType"])) == {
-        "AUTHENTICATION",
-        "AUTHORIZATION",
-        "VALIDATION",
-        "REQUEST",
-        "NOT_FOUND",
-        "CONFLICT",
-        "RATE_LIMIT",
-        "SERVER",
-    }
-    assert set(_enum_values(document, api_error["properties"]["errorCode"])) == {
-        "REQUEST_FAILED",
-        "INVALID_JSON",
-        "INVALID_INPUT",
-        "REQUEST_BODY_TOO_LARGE",
-        "UNSUPPORTED_MEDIA_TYPE",
-        "METHOD_NOT_ALLOWED",
-        "NOT_ACCEPTABLE",
-        "AUTHENTICATION_REQUIRED",
-        "AUTHENTICATION_FAILED",
-        "CSRF_FAILED",
-        "PERMISSION_DENIED",
-        "PARTICIPANT_REQUIRED",
-        "NOT_FOUND",
-        "SCORE_OUT_OF_RANGE",
-        "RATE_LIMITED",
-        "INTERNAL_SERVER_ERROR",
-    }
-    details = api_error["properties"]["details"]
-    assert details["type"] == "array"
-    detail_schema = _resolve_schema(document, details["items"])
+    observed_pairs_by_component = {}
+    for component_name in ERROR_RESPONSE_COMPONENTS.values():
+        envelope = schemas[component_name]
+        assert set(envelope["required"]) == {"resultType", "error", "success"}
+        assert _enum_values(
+            document,
+            envelope["properties"]["resultType"],
+        ) == ["ERROR"]
+        assert _schema_types(document, envelope["properties"]["success"]) == {"null"}
+
+        observed_pairs = set()
+        for api_error in _error_variants(document, envelope):
+            assert set(api_error["required"]) == {
+                "errorType",
+                "errorCode",
+                "reason",
+                "details",
+            }
+            assert set(api_error["properties"]) == {
+                "errorType",
+                "errorCode",
+                "reason",
+                "details",
+            }
+            error_type = _enum_values(
+                document,
+                api_error["properties"]["errorType"],
+            )
+            error_code = _enum_values(
+                document,
+                api_error["properties"]["errorCode"],
+            )
+            assert len(error_type) == 1
+            assert len(error_code) == 1
+            observed_pairs.add((error_type[0], error_code[0]))
+
+            details = api_error["properties"]["details"]
+            assert details["type"] == "array"
+            if error_code == ["INVALID_INPUT"]:
+                assert details["minItems"] == 1
+            else:
+                assert details["maxItems"] == 0
+
+        observed_pairs_by_component[component_name] = observed_pairs
+
+    assert observed_pairs_by_component == ERROR_PAIRS
+
+    detail_schema = schemas["ErrorDetail"]
     assert set(detail_schema["required"]) == {"field", "code", "message"}
     assert set(detail_schema["properties"]) == {"field", "code", "message"}
     assert _schema_types(document, detail_schema["properties"]["field"]) == {
