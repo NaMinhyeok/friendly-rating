@@ -11,7 +11,7 @@ const dashboardScriptPath = path.resolve(
 const dashboardSource = fs.readFileSync(dashboardScriptPath, "utf8");
 
 class FakeElement {
-  constructor({ dataset = {}, disabled = false, value = "" } = {}) {
+  constructor({ dataset = {}, disabled = false, name = "", value = "" } = {}) {
     this.attributes = {};
     this.children = [];
     this.className = "";
@@ -20,6 +20,7 @@ class FakeElement {
     this.focused = false;
     this.hidden = false;
     this.listeners = {};
+    this.name = name;
     this.selectorLists = {};
     this.selectors = {};
     this.style = {};
@@ -42,6 +43,10 @@ class FakeElement {
 
   focus() {
     this.focused = true;
+  }
+
+  getAttribute(name) {
+    return Object.hasOwn(this.attributes, name) ? this.attributes[name] : null;
   }
 
   querySelector(selector) {
@@ -115,8 +120,8 @@ function descendantText(element) {
   ].join("");
 }
 
-function readCommand({ operation, amount, reason }) {
-  const fixture = JSON.stringify({ operation, amount, reason });
+function evaluateCommand({ operation, amount, reason, currentScore = null }) {
+  const fixture = JSON.stringify({ operation, amount, reason, currentScore });
   const sandbox = {
     console,
     document: {
@@ -144,14 +149,25 @@ function readCommand({ operation, amount, reason }) {
             throw new Error(\`Unexpected selector: \${selector}\`);
           },
         };
-        globalThis.commandResult = readScoreChangeCommand(form);
+        const errors = [];
+        showFieldError = (_form, field, message) => errors.push({ field, message });
+        showFormStatus = () => undefined;
+        focusFirstInvalidField = () => undefined;
+        globalThis.commandResult = readScoreChangeCommand(form, fixture.currentScore);
+        globalThis.commandErrors = errors;
       }
     `,
     sandbox,
     { filename: dashboardScriptPath },
   );
 
-  return JSON.parse(JSON.stringify(sandbox.commandResult));
+  return JSON.parse(
+    JSON.stringify({ command: sandbox.commandResult, errors: sandbox.commandErrors }),
+  );
+}
+
+function readCommand(input) {
+  return evaluateCommand(input).command;
 }
 
 function readErrorHandling({ status, apiError }) {
@@ -199,6 +215,73 @@ function readErrorHandling({ status, apiError }) {
   return JSON.parse(JSON.stringify(sandbox.errorHandlingResult));
 }
 
+function readMappedApiFields(details) {
+  const fixture = JSON.stringify({ details });
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+  };
+
+  vm.runInNewContext(
+    `${dashboardSource}
+      {
+        const fixture = ${fixture};
+        const mappedFields = [];
+        showFieldError = (_form, field, message) => {
+          mappedFields.push({ field, message });
+        };
+        showFormStatus = () => undefined;
+        focusFirstInvalidField = () => undefined;
+        const error = new ApiRequestError(400, {
+          errorCode: "INVALID_REQUEST",
+          reason: "입력값을 확인해 주세요.",
+          details: fixture.details,
+        });
+        showApiFormError({}, error);
+        globalThis.mappedFields = mappedFields;
+      }
+    `,
+    sandbox,
+    { filename: dashboardScriptPath },
+  );
+
+  return JSON.parse(JSON.stringify(sandbox.mappedFields));
+}
+
+function readCreatedChangeValidation(payload, command) {
+  const fixture = JSON.stringify({ payload, command });
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+  };
+
+  vm.runInNewContext(
+    `${dashboardSource}
+      {
+        const fixture = ${fixture};
+        try {
+          const change = readCreatedScoreChange(fixture.payload, fixture.command);
+          globalThis.createdChangeValidation = { ok: true, change };
+        } catch (error) {
+          globalThis.createdChangeValidation = { ok: false, message: error.message };
+        }
+      }
+    `,
+    sandbox,
+    { filename: dashboardScriptPath },
+  );
+
+  return JSON.parse(JSON.stringify(sandbox.createdChangeValidation));
+}
+
 test("increase maps the entered amount to a positive delta", () => {
   assert.deepEqual(
     readCommand({ operation: "increase", amount: "3", reason: "  고마워  " }),
@@ -210,6 +293,87 @@ test("decrease maps the entered amount to a negative delta", () => {
   assert.deepEqual(
     readCommand({ operation: "decrease", amount: "4", reason: "서운했어" }),
     { delta: -4, reason: "서운했어" },
+  );
+});
+
+test("target mode sends the final score without deriving a delta", () => {
+  assert.deepEqual(
+    readCommand({
+      operation: "target",
+      amount: "100",
+      reason: "다시 힘내자",
+      currentScore: 35,
+    }),
+    { targetScore: 100, reason: "다시 힘내자" },
+  );
+});
+
+test("target mode accepts zero as a final score", () => {
+  assert.deepEqual(
+    readCommand({
+      operation: "target",
+      amount: "0",
+      reason: "",
+      currentScore: 35,
+    }),
+    { targetScore: 0, reason: "" },
+  );
+});
+
+test("target mode rejects a raw empty value instead of treating it as zero", () => {
+  const result = evaluateCommand({
+    operation: "target",
+    amount: "",
+    reason: "",
+    currentScore: 35,
+  });
+
+  assert.equal(result.command, null);
+  assert.deepEqual(result.errors, [
+    {
+      field: "amount",
+      message: "최종 점수는 0부터 100 사이의 정수여야 합니다.",
+    },
+  ]);
+});
+
+test("target mode leaves same-score detection to the locked server state", () => {
+  assert.deepEqual(
+    readCommand({
+      operation: "target",
+      amount: "35",
+      reason: "",
+      currentScore: 35,
+    }),
+    { targetScore: 35, reason: "" },
+  );
+});
+
+test("a successful mutation response must include a valid resulting score", () => {
+  assert.deepEqual(
+    readCreatedChangeValidation(
+      {
+        resultType: "SUCCESS",
+        error: null,
+        success: { delta: 65 },
+      },
+      { targetScore: 100, reason: "" },
+    ),
+    { ok: false, message: "점수 변경 응답 형식이 올바르지 않습니다." },
+  );
+});
+
+test("a delta mutation response must match the requested delta", () => {
+  assert.deepEqual(
+    readCreatedChangeValidation(
+      {
+        resultType: "SUCCESS",
+        error: null,
+        success: { delta: -3, resultingScore: 20 },
+      },
+      { delta: 3, reason: "" },
+    ),
+    { ok: false, message: "점수 변경 응답 형식이 올바르지 않습니다." },
   );
 });
 
@@ -254,12 +418,21 @@ test("a confirmed score conflict remains retryable", () => {
   );
 });
 
-test("dashboard initializes, submits once, and reconciles the rendered score", async () => {
+test("targetScore API errors are attached to the shared amount input", () => {
+  assert.deepEqual(
+    readMappedApiFields([
+      { field: "targetScore", message: "최종 점수를 확인해 주세요." },
+    ]),
+    [{ field: "amount", message: "최종 점수를 확인해 주세요." }],
+  );
+});
+
+test("dashboard switches modes, submits a target once, and reconciles the score", async () => {
   const scoreList = new FakeElement();
   const scoreListStatus = new FakeElement();
   scoreList.selectors["[data-score-list-status]"] = scoreListStatus;
   const form = new FakeElement();
-  const operation = new FakeElement({ value: "increase" });
+  const operation = new FakeElement({ name: "operation", value: "increase" });
   const amount = new FakeElement({ value: "3" });
   const reason = new FakeElement({ value: "고마워" });
   const csrf = new FakeElement({ value: "rendered-csrf-token" });
@@ -269,11 +442,17 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
   const characterCount = new FakeElement();
   const currentParticipant = new FakeElement();
   const scoreTarget = new FakeElement();
+  const amountLabel = new FakeElement();
+  const amountHint = new FakeElement();
+  const scorePreview = new FakeElement();
   const errorLists = [new FakeElement(), new FakeElement(), new FakeElement()];
 
   form.selectors = {
     "[data-character-current]": characterCount,
+    "[data-score-amount-hint]": amountHint,
+    "[data-score-amount-label]": amountLabel,
     "[data-score-form-status]": formStatus,
+    "[data-score-preview]": scorePreview,
     "[data-score-submit-label]": submitLabel,
     "[name=amount]": amount,
     "[name=csrfmiddlewaretoken]": csrf,
@@ -304,6 +483,7 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
   const documentListeners = {};
   const globalListeners = {};
   let currentScore = 0;
+  let postRequestCount = 0;
   let resolvePost;
   const sandbox = {
     addEventListener(type, listener) {
@@ -330,14 +510,29 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
     fetch(url, options = {}) {
       fetchCalls.push({ options, url });
       if (options.method === "POST") {
+        postRequestCount += 1;
+        if (postRequestCount === 2) {
+          return Promise.resolve(
+            jsonResponse(409, {
+              resultType: "ERROR",
+              error: {
+                errorType: "CONFLICT",
+                errorCode: "SCORE_UNCHANGED",
+                reason: "이미 100점이에요.",
+                details: [],
+              },
+              success: null,
+            }),
+          );
+        }
         return new Promise((resolve) => {
           resolvePost = () => {
-            currentScore = 3;
+            currentScore = 100;
             resolve(
               jsonResponse(201, {
                 resultType: "SUCCESS",
                 error: null,
-                success: { delta: 3 },
+                success: { delta: 100, resultingScore: 100 },
               }),
             );
           };
@@ -354,6 +549,38 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
   assert.equal(currentParticipant.textContent, "첫째님의 마음 공간");
   assert.equal(scoreTarget.textContent, "둘째");
   assert.equal(scoreList.children.length, 2);
+  assert.equal(amountLabel.textContent, "몇 점을 바꿀까요?");
+  assert.equal(amountHint.textContent, "현재 점수에서 입력한 만큼 바뀌어요.");
+  assert.equal(amount.min, "1");
+  assert.equal(amount.placeholder, "1~100 입력");
+
+  amount.value = "4";
+  operation.value = "decrease";
+  form.listeners.change({ target: operation });
+  assert.equal(amount.value, "4");
+
+  operation.value = "target";
+  form.listeners.change({ target: operation });
+  assert.equal(amount.value, "");
+  assert.equal(amountLabel.textContent, "최종 점수");
+  assert.equal(amountHint.textContent, "입력한 점수가 그대로 새 점수가 돼요.");
+  assert.equal(amount.min, "0");
+  assert.equal(amount.placeholder, "0~100 입력");
+
+  amount.value = "90";
+  operation.value = "increase";
+  form.listeners.change({ target: operation });
+  assert.equal(amount.value, "");
+  assert.equal(amount.min, "1");
+
+  operation.value = "target";
+  form.listeners.change({ target: operation });
+  assert.equal(amount.value, "");
+
+  amount.value = "100";
+  amount.listeners.input();
+  assert.equal(scorePreview.hidden, false);
+  assert.equal(scorePreview.textContent, "현재 0점 → 100점 (+100점)");
 
   let preventedSubmissions = 0;
   const event = {
@@ -377,7 +604,7 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
 
   const postCall = fetchCalls.find((call) => call.options.method === "POST");
   assert.deepEqual(JSON.parse(postCall.options.body), {
-    delta: 3,
+    targetScore: 100,
     reason: "고마워",
   });
   assert.equal(postCall.options.credentials, "same-origin");
@@ -387,12 +614,28 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
     2,
   );
-  assert.equal(descendantText(scoreList.children[0]).includes("3"), true);
-  assert.equal(formStatus.textContent, "친밀도를 +3점 변경했어요.");
+  assert.equal(descendantText(scoreList.children[0]).includes("100"), true);
+  assert.equal(formStatus.textContent, "친밀도를 100점으로 기록했어요.");
   assert.equal(amount.value, "");
   assert.equal(reason.value, "");
   assert.equal(amount.disabled, false);
   assert.equal(reason.disabled, false);
+  assert.equal(submitButton.disabled, false);
+
+  amount.value = "100";
+  form.listeners.submit(event);
+  await settleAsyncWork();
+
+  assert.equal(
+    fetchCalls.filter((call) => call.options.method === "POST").length,
+    2,
+  );
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
+    3,
+  );
+  assert.equal(amount.value, "");
+  assert.equal(formStatus.textContent, "이미 100점이에요.");
   assert.equal(submitButton.disabled, false);
 
   sandbox.document.visibilityState = "visible";
@@ -400,14 +643,14 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
   await settleAsyncWork();
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    3,
+    4,
   );
 
   globalListeners.pageshow({ persisted: true });
   await settleAsyncWork();
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    4,
+    5,
   );
 
   documentListeners["woorisai:push-message"]({
@@ -416,6 +659,6 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
   await settleAsyncWork();
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    5,
+    6,
   );
 });

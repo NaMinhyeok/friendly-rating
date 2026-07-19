@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True, slots=True)
-class ScoreChangeCommand:
+class DeltaScoreChangeCommand:
     delta: int
     reason: str
 
@@ -35,6 +35,15 @@ class ScoreChangeCommand:
 @dataclass(frozen=True, slots=True)
 class ScoreChangeCommentCommand:
     content: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetScoreChangeCommand:
+    target_score: int
+    reason: str
+
+
+type ScoreChangeCommand = DeltaScoreChangeCommand | TargetScoreChangeCommand
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +60,23 @@ class PushDeviceCommand:
     }
 )
 class ScoreDeltaField(serializers.IntegerField):
+    @override
+    def to_internal_value(self, data: object) -> int:
+        if isinstance(data, float) and data.is_integer():
+            data = int(data)
+        if isinstance(data, bool) or not isinstance(data, int):
+            self.fail("invalid")
+        return super().to_internal_value(data)
+
+
+@extend_schema_field(
+    {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 100,
+    }
+)
+class ScoreTargetField(serializers.IntegerField):
     @override
     def to_internal_value(self, data: object) -> int:
         if isinstance(data, float) and data.is_integer():
@@ -112,7 +138,8 @@ class StrictRequestSerializer(serializers.Serializer[object]):
 
 
 class ScoreChangeRequestSerializer(StrictRequestSerializer):
-    delta = ScoreDeltaField(min_value=-100, max_value=100)
+    delta = ScoreDeltaField(required=False, min_value=-100, max_value=100)
+    targetScore = ScoreTargetField(required=False, min_value=0, max_value=100)
     reason = StrictCharField(
         required=False,
         allow_blank=True,
@@ -129,15 +156,34 @@ class ScoreChangeRequestSerializer(StrictRequestSerializer):
             )
         return value
 
+    @override
+    def validate(self, attrs: dict[str, Any]) -> dict[str, Any]:
+        if ("delta" in attrs) == ("targetScore" in attrs):
+            raise serializers.ValidationError(
+                "delta와 targetScore 중 하나만 입력해 주세요.",
+                code="exactly_one",
+            )
+        return attrs
+
     def to_command(self) -> ScoreChangeCommand:
         data = self.validated_data
-        delta = data.get("delta")
         reason = data.get("reason")
-        if not isinstance(delta, int) or isinstance(delta, bool):
-            raise RuntimeError("Validated score delta is not an integer.")
         if not isinstance(reason, str):
             raise RuntimeError("Validated score reason is not a string.")
-        return ScoreChangeCommand(delta=delta, reason=reason)
+
+        if "delta" in data:
+            delta = data.get("delta")
+            if not isinstance(delta, int) or isinstance(delta, bool):
+                raise RuntimeError("Validated score delta is not an integer.")
+            return DeltaScoreChangeCommand(delta=delta, reason=reason)
+
+        target_score = data.get("targetScore")
+        if not isinstance(target_score, int) or isinstance(target_score, bool):
+            raise RuntimeError("Validated target score is not an integer.")
+        return TargetScoreChangeCommand(
+            target_score=target_score,
+            reason=reason,
+        )
 
 
 class ScoreChangePageQuerySerializer(StrictRequestSerializer):
@@ -163,13 +209,21 @@ class ScoreChangeRequestSerializerExtension(OpenApiSerializerExtension):
                     "maximum": 100,
                     "not": {"const": 0},
                 },
+                "targetScore": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 100,
+                },
                 "reason": {
                     "type": "string",
                     "maxLength": 200,
                     "default": "",
                 },
             },
-            "required": ["delta"],
+            "oneOf": [
+                {"required": ["delta"]},
+                {"required": ["targetScore"]},
+            ],
         }
 
 
@@ -466,9 +520,18 @@ class NotFoundApiErrorSerializer(EmptyDetailsApiErrorSerializer):
     errorCode = serializers.ChoiceField(choices=(ErrorCode.NOT_FOUND.value,))
 
 
+@extend_schema_field({"type": "string", "const": ErrorType.CONFLICT.value})
+class ConflictErrorTypeField(serializers.CharField):
+    pass
+
+
 class ScoreOutOfRangeApiErrorSerializer(EmptyDetailsApiErrorSerializer):
-    errorType = serializers.ChoiceField(choices=(ErrorType.CONFLICT.value,))
+    errorType = ConflictErrorTypeField()
     errorCode = serializers.ChoiceField(choices=(ErrorCode.SCORE_OUT_OF_RANGE.value,))
+
+
+class ScoreUnchangedApiErrorSerializer(ScoreOutOfRangeApiErrorSerializer):
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.SCORE_UNCHANGED.value,))
 
 
 class RequestBodyTooLargeApiErrorSerializer(EmptyDetailsApiErrorSerializer):
@@ -569,7 +632,15 @@ class NotFoundErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
 
 
 class ScoreOutOfRangeErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
-    error = ScoreOutOfRangeApiErrorSerializer()
+    error = PolymorphicProxySerializer(
+        component_name="ScoreConflictApiError",
+        serializers={
+            ErrorCode.SCORE_OUT_OF_RANGE.value: ScoreOutOfRangeApiErrorSerializer,
+            ErrorCode.SCORE_UNCHANGED.value: ScoreUnchangedApiErrorSerializer,
+        },
+        resource_type_field_name="errorCode",
+        many=False,
+    )
 
 
 class RequestBodyTooLargeErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):

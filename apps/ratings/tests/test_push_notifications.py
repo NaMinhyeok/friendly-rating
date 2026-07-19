@@ -11,7 +11,7 @@ from ..notifications import (
     send_score_change_notification,
     send_score_comment_notification,
 )
-from ..services import change_relationship_score
+from ..services import change_relationship_score, set_relationship_score
 
 VALID_FID = "c12345678901234567890A"
 SECOND_FID = "d12345678901234567890B"
@@ -161,6 +161,28 @@ def test_score_change_notifies_recipient_only_after_commit(
             change = change_relationship_score(
                 source_participant=participant_pair.first,
                 delta=1,
+            )
+            send_push.assert_not_called()
+
+        send_push.assert_called_once_with(
+            recipient_id=participant_pair.second.pk,
+            score_change_id=change.pk,
+        )
+
+
+@pytest.mark.django_db
+def test_absolute_score_change_notifies_recipient_only_after_commit(
+    participant_pair,
+    push_delivery_settings,
+    django_capture_on_commit_callbacks,
+):
+    with patch(
+        "apps.ratings.services.score_changes.send_score_change_notification"
+    ) as send_push:
+        with django_capture_on_commit_callbacks(execute=True):
+            change = set_relationship_score(
+                source_participant=participant_pair.first,
+                target_score=25,
             )
             send_push.assert_not_called()
 

@@ -1,9 +1,10 @@
-from typing import Never, override
+from typing import Never, cast, override
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.paginator import EmptyPage, Paginator
 from django.db.models import Count, Prefetch, Q, QuerySet
 from django.shortcuts import get_object_or_404
+from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import NotFound, ValidationError
@@ -19,14 +20,17 @@ from ..models import (
     ScoreChangeComment,
 )
 from ..services import (
+    ScoreUnchangedError,
     add_score_change_comment,
     change_relationship_score,
     register_participant_push_device,
+    set_relationship_score,
     unregister_participant_push_device,
 )
-from .exceptions import ParticipantRequired, ScoreOutOfRange
+from .exceptions import ParticipantRequired, ScoreOutOfRange, ScoreUnchanged
 from .serializers import (
     BadRequestErrorEnvelopeSerializer,
+    DeltaScoreChangeCommand,
     ForbiddenErrorEnvelopeSerializer,
     InternalServerErrorEnvelopeSerializer,
     InvalidInputErrorEnvelopeSerializer,
@@ -62,6 +66,18 @@ CSRF_HEADER_PARAMETER = OpenApiParameter(
     description="렌더링된 페이지 또는 CSRF 쿠키에서 얻은 토큰",
 )
 SCORE_CHANGE_PAGE_SIZE = 20
+
+
+class ScoreChangeAutoSchema(AutoSchema):
+    @override
+    def _get_request_body(
+        self,
+        direction: str = "request",
+    ):
+        request_body = super()._get_request_body(direction)
+        if self.method == "POST" and request_body is not None:
+            cast(dict[str, object], request_body)["required"] = True
+        return request_body
 
 
 def _participant_for_request(request: Request) -> Participant:
@@ -129,6 +145,8 @@ class RelationshipScoreListView(APIView):
 
 
 class ScoreChangeListView(APIView):
+    schema = ScoreChangeAutoSchema()
+
     @extend_schema(
         operation_id="listScoreChanges",
         summary="관계 점수 변경 이력 조회",
@@ -187,6 +205,7 @@ class ScoreChangeListView(APIView):
         summary="현재 참가자의 관계 점수 변경",
         description=(
             "세션에 연결된 참가자의 outgoing score만 변경하고 변경 이력을 생성합니다. "
+            "delta와 targetScore 중 하나만 입력하며 targetScore는 최종 점수를 뜻합니다. "
             "같은 출처 브라우저는 X-CSRFToken 헤더를 함께 전송해야 하며 JSON 요청 "
             "본문은 4KiB 이하여야 합니다."
         ),
@@ -211,11 +230,23 @@ class ScoreChangeListView(APIView):
         command = serializer.to_command()
 
         try:
-            change = change_relationship_score(
-                source_participant=participant,
-                delta=command.delta,
-                reason=command.reason,
-            )
+            if isinstance(command, DeltaScoreChangeCommand):
+                change = change_relationship_score(
+                    source_participant=participant,
+                    delta=command.delta,
+                    reason=command.reason,
+                )
+            else:
+                try:
+                    change = set_relationship_score(
+                        source_participant=participant,
+                        target_score=command.target_score,
+                        reason=command.reason,
+                    )
+                except ScoreUnchangedError as error:
+                    raise ScoreUnchanged(
+                        reason=f"이미 {command.target_score}점이에요."
+                    ) from error
         except DjangoValidationError as error:
             reason = error.messages[0] if error.messages else None
             raise ScoreOutOfRange(reason=reason) from error

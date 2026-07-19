@@ -10,6 +10,31 @@ function initializeDashboard(root) {
   const submitButton = root.querySelector("[data-score-submit]");
   let isSubmitting = false;
   let scoreLoadSequence = 0;
+  let ownCurrentScore = null;
+  let selectedOperation = readScoreOperation(form);
+
+  if (form) {
+    updateScoreInputUi(form, selectedOperation, ownCurrentScore);
+    form.addEventListener("change", (event) => {
+      if (event.target?.name !== "operation") {
+        return;
+      }
+
+      const nextOperation = event.target.value;
+      if (!["increase", "decrease", "target"].includes(nextOperation)) {
+        return;
+      }
+      if ((selectedOperation === "target") !== (nextOperation === "target")) {
+        form.querySelector("[name=amount]").value = "";
+      }
+      selectedOperation = nextOperation;
+      clearFormFeedback(form);
+      updateScoreInputUi(form, selectedOperation, ownCurrentScore);
+    });
+    form.querySelector("[name=amount]")?.addEventListener("input", () => {
+      updateScorePreview(form, ownCurrentScore, readScoreOperation(form));
+    });
+  }
 
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -39,7 +64,9 @@ function initializeDashboard(root) {
       if (loadSequence !== scoreLoadSequence) {
         return;
       }
-      renderScores(root, scoreList, scores);
+      const ownScore = renderScores(root, scoreList, scores);
+      ownCurrentScore = ownScore.currentScore;
+      updateScoreInputUi(form, selectedOperation, ownCurrentScore);
       if (submitButton) {
         submitButton.disabled = false;
       }
@@ -67,6 +94,7 @@ function initializeDashboard(root) {
     if (!command) {
       return;
     }
+    const isTargetCommand = Object.hasOwn(command, "targetScore");
 
     isSubmitting = true;
     let shouldUnlockSubmission = true;
@@ -84,27 +112,37 @@ function initializeDashboard(root) {
         },
         body: JSON.stringify(command),
       });
-      const change = payload?.success;
-      if (
-        payload?.resultType !== "SUCCESS" ||
-        payload?.error !== null ||
-        !change ||
-        !Number.isInteger(change.delta)
-      ) {
-        throw new Error("점수 변경 응답 형식이 올바르지 않습니다.");
-      }
+      const change = readCreatedScoreChange(payload, command);
 
-      const sign = change.delta > 0 ? "+" : "";
-      showFormStatus(form, `친밀도를 ${sign}${change.delta}점 변경했어요.`, "success");
+      ownCurrentScore = change.resultingScore;
+      if (isTargetCommand) {
+        showFormStatus(
+          form,
+          `친밀도를 ${change.resultingScore}점으로 기록했어요.`,
+          "success",
+        );
+      } else {
+        const sign = change.delta > 0 ? "+" : "";
+        showFormStatus(
+          form,
+          `친밀도를 ${sign}${change.delta}점 변경했어요.`,
+          "success",
+        );
+      }
       form.querySelector("[name=amount]").value = "";
       form.querySelector("[name=reason]").value = "";
       updateCharacterCount(form);
+      updateScorePreview(form, ownCurrentScore, selectedOperation);
       await loadScores();
     } catch (error) {
       if (redirectWhenAuthenticationExpired(error)) {
         return;
       }
       shouldUnlockSubmission = !showApiFormError(form, error);
+      if (isScoreUnchangedError(error)) {
+        form.querySelector("[name=amount]").value = "";
+        await loadScores();
+      }
     } finally {
       isSubmitting = false;
       form.setAttribute("aria-busy", "false");
@@ -160,6 +198,28 @@ async function requestJson(url, options = {}) {
   return payload;
 }
 
+function readCreatedScoreChange(payload, command) {
+  const change = payload?.success;
+  const isTargetCommand = Object.hasOwn(command, "targetScore");
+  if (
+    payload?.resultType !== "SUCCESS" ||
+    payload?.error !== null ||
+    !change ||
+    !Number.isInteger(change.delta) ||
+    change.delta === 0 ||
+    change.delta < -100 ||
+    change.delta > 100 ||
+    !Number.isInteger(change.resultingScore) ||
+    change.resultingScore < 0 ||
+    change.resultingScore > 100 ||
+    (isTargetCommand && change.resultingScore !== command.targetScore) ||
+    (!isTargetCommand && change.delta !== command.delta)
+  ) {
+    throw new Error("점수 변경 응답 형식이 올바르지 않습니다.");
+  }
+  return change;
+}
+
 class ApiRequestError extends Error {
   constructor(status, apiError) {
     super(apiError?.reason || "요청을 처리하지 못했어요.");
@@ -202,6 +262,7 @@ function renderScores(root, scoreList, scores) {
     `${ownScore.sourceParticipant.displayName}님의 마음 공간`;
   root.querySelector("[data-score-target]").textContent =
     ownScore.targetParticipant.displayName;
+  return ownScore;
 }
 
 function createScoreCard(score) {
@@ -268,20 +329,98 @@ function renderScoreLoadError(scoreList, retry) {
   scoreList.replaceChildren(state);
 }
 
+function readScoreOperation(form) {
+  return form?.querySelector("[name=operation]:checked")?.value || null;
+}
+
+function readIntegerInputValue(input) {
+  const rawValue = typeof input?.value === "string" ? input.value.trim() : "";
+  if (rawValue === "") {
+    return null;
+  }
+  const value = Number(rawValue);
+  return Number.isInteger(value) ? value : null;
+}
+
+function updateScoreInputUi(form, operation, currentScore) {
+  if (!form) {
+    return;
+  }
+  const isTargetMode = operation === "target";
+  const amountInput = form.querySelector("[name=amount]");
+  const amountLabel = form.querySelector("[data-score-amount-label]");
+  const amountHint = form.querySelector("[data-score-amount-hint]");
+
+  if (amountLabel) {
+    amountLabel.textContent = isTargetMode ? "최종 점수" : "몇 점을 바꿀까요?";
+  }
+  if (amountHint) {
+    amountHint.textContent = isTargetMode
+      ? "입력한 점수가 그대로 새 점수가 돼요."
+      : "현재 점수에서 입력한 만큼 바뀌어요.";
+  }
+  if (amountInput) {
+    amountInput.min = isTargetMode ? "0" : "1";
+    amountInput.placeholder = isTargetMode ? "0~100 입력" : "1~100 입력";
+  }
+  updateScorePreview(form, currentScore, operation);
+}
+
+function updateScorePreview(form, currentScore, operation) {
+  const preview = form?.querySelector("[data-score-preview]");
+  if (!preview) {
+    return;
+  }
+
+  const amount = readIntegerInputValue(form.querySelector("[name=amount]"));
+  const minimum = operation === "target" ? 0 : 1;
+  if (
+    !Number.isInteger(currentScore) ||
+    !["increase", "decrease", "target"].includes(operation) ||
+    amount === null ||
+    amount < minimum ||
+    amount > 100
+  ) {
+    preview.textContent = "";
+    preview.hidden = true;
+    return;
+  }
+
+  const resultingScore =
+    operation === "target"
+      ? amount
+      : currentScore + (operation === "decrease" ? -amount : amount);
+  const delta = resultingScore - currentScore;
+  if (resultingScore < 0 || resultingScore > 100 || delta === 0) {
+    preview.textContent = "";
+    preview.hidden = true;
+    return;
+  }
+
+  const sign = delta > 0 ? "+" : "";
+  preview.textContent = `현재 ${currentScore}점 → ${resultingScore}점 (${sign}${delta}점)`;
+  preview.hidden = false;
+}
+
 function readScoreChangeCommand(form) {
-  const operation = form.querySelector("[name=operation]:checked")?.value;
+  const operation = readScoreOperation(form);
   const amountInput = form.querySelector("[name=amount]");
   const reasonInput = form.querySelector("[name=reason]");
-  const amount = Number(amountInput?.value);
+  const amount = readIntegerInputValue(amountInput);
   const reason = reasonInput?.value.trim() || "";
   let isValid = true;
 
-  if (operation !== "increase" && operation !== "decrease") {
-    showFieldError(form, "operation", "변경 방향을 선택해 주세요.");
+  if (!["increase", "decrease", "target"].includes(operation)) {
+    showFieldError(form, "operation", "점수를 바꿀 방법을 선택해 주세요.");
     isValid = false;
   }
-  if (!Number.isInteger(amount) || amount < 1 || amount > 100) {
-    showFieldError(form, "amount", "변경할 점수는 1부터 100 사이여야 합니다.");
+  const minimum = operation === "target" ? 0 : 1;
+  if (amount === null || amount < minimum || amount > 100) {
+    const message =
+      operation === "target"
+        ? "최종 점수는 0부터 100 사이의 정수여야 합니다."
+        : "변경할 점수는 1부터 100 사이의 정수여야 합니다.";
+    showFieldError(form, "amount", message);
     isValid = false;
   }
   if (reason.length > 200) {
@@ -294,17 +433,19 @@ function readScoreChangeCommand(form) {
     return null;
   }
 
-  return {
-    delta: operation === "decrease" ? -amount : amount,
-    reason,
-  };
+  if (operation === "target") {
+    return { targetScore: amount, reason };
+  }
+  return { delta: operation === "decrease" ? -amount : amount, reason };
 }
 
 function showApiFormError(form, error) {
   const apiError = error instanceof ApiRequestError ? error.apiError : null;
   const details = Array.isArray(apiError?.details) ? apiError.details : [];
   details.forEach((detail) => {
-    const field = detail?.field === "delta" ? "amount" : detail?.field;
+    const field = ["delta", "targetScore"].includes(detail?.field)
+      ? "amount"
+      : detail?.field;
     if (["amount", "reason", "operation"].includes(field)) {
       showFieldError(form, field, detail.message);
     }
@@ -328,14 +469,30 @@ function showApiFormError(form, error) {
   return requiresRefresh;
 }
 
+function isScoreUnchangedError(error) {
+  return (
+    error instanceof ApiRequestError &&
+    error.apiError?.errorCode === "SCORE_UNCHANGED"
+  );
+}
+
 function clearFormFeedback(form) {
-  form.querySelectorAll("[data-error-for]").forEach((list) => {
+  const errorLists = [...form.querySelectorAll("[data-error-for]")];
+  const errorIds = new Set(errorLists.map((list) => list.id).filter(Boolean));
+  errorLists.forEach((list) => {
     list.replaceChildren();
     list.hidden = true;
   });
   form.querySelectorAll("[aria-invalid=true]").forEach((field) => {
     field.removeAttribute("aria-invalid");
-    field.removeAttribute("aria-describedby");
+    const describedBy = (field.getAttribute("aria-describedby") || "")
+      .split(/\s+/)
+      .filter((id) => id && !errorIds.has(id));
+    if (describedBy.length > 0) {
+      field.setAttribute("aria-describedby", describedBy.join(" "));
+    } else {
+      field.removeAttribute("aria-describedby");
+    }
   });
   showFormStatus(form, "", "");
 }
@@ -351,7 +508,11 @@ function showFieldError(form, field, message) {
   list.hidden = false;
   form.querySelectorAll(`[name="${field}"]`).forEach((input) => {
     input.setAttribute("aria-invalid", "true");
-    input.setAttribute("aria-describedby", list.id);
+    const describedBy = new Set(
+      (input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean),
+    );
+    describedBy.add(list.id);
+    input.setAttribute("aria-describedby", [...describedBy].filter(Boolean).join(" "));
   });
 }
 

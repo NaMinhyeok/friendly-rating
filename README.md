@@ -92,6 +92,11 @@ mutation은 제거되었습니다. JavaScript를 사용할 수 없으면 세 화
 푸시는 사적인 내용 없이 해당 대화 화면으로 연결됩니다. 인증된 관계 데이터에는
 `Cache-Control: private, no-store`가 적용됩니다.
 
+점수 변경 요청은 기존처럼 `delta`에 증감값을 보내거나 `targetScore`에 0~100 사이의
+최종 점수를 보낼 수 있습니다. 두 필드 중 정확히 하나만 입력하며 `reason`은 선택
+사항입니다. 두 방식 모두 응답과 변경 이력에는 실제 증감값인 `delta`와 변경 후 점수인
+`resultingScore`가 기록됩니다.
+
 모든 API 응답은 `resultType`, `error`, `success`를 갖는 JSON envelope를 사용합니다.
 성공과 오류 branch는 서로 배타적이며 HTTP 상태 코드를 그대로 유지합니다. 생성된
 OpenAPI 3.1 문서는 `/api/schema/`에서 확인할 수 있습니다. 이 schema endpoint 자체는

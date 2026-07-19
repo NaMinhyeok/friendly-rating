@@ -601,6 +601,10 @@ textarea:focus {
   background: var(--cream-deep);
 }
 
+.segment-control--score-operation {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .segment-option {
   position: relative;
   cursor: pointer;
@@ -643,6 +647,13 @@ textarea:focus {
   font-weight: 700;
   transform: translateY(-50%);
   pointer-events: none;
+}
+
+.score-preview {
+  margin: 0.35rem 0 0;
+  color: var(--coral-dark);
+  font-size: 0.78rem;
+  font-weight: 750;
 }
 
 .history-link {
