@@ -311,7 +311,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         relationship_writes = [
             sql
             for sql in self.dml_queries(queries.captured_queries)
-            if "ratings_relationshipscore" in sql.lower()
+            if '"relationship_score"' in sql.lower()
         ]
         self.assertEqual(relationship_writes, [])
         self.assertIn("안전하게 반영", output)
@@ -364,7 +364,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         )
         self.assertEqual(len(self.dml_queries(queries.captured_queries)), 1)
         self.assertIn(
-            'INSERT INTO "ratings_relationshipscore"',
+            'INSERT INTO "relationship_score"',
             self.dml_queries(queries.captured_queries)[0],
         )
 
