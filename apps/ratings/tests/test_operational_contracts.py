@@ -166,6 +166,7 @@ def test_railway_media_cleanup_cron_is_a_daily_one_shot_without_migrations():
         "build": {"builder": "RAILPACK"},
         "deploy": {
             "cronSchedule": "0 18 * * *",
+            "preDeployCommand": [],
             "restartPolicyType": "NEVER",
             "startCommand": "python manage.py cleanup_media_uploads --limit 100",
         },
