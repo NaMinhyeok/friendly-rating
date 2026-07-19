@@ -429,8 +429,9 @@ function readScoreChangeCommand(form) {
   }
   const minimum = operation === "target" ? 0 : 1;
   if (hasFractionalInputValue(amountInput)) {
-    markFieldInvalid(form, "amount");
-    showScoreToast(form, "점수는 소수점 없이 정수로 입력해 주세요.", "warning");
+    const message = "점수는 소수점 없이 정수로 입력해 주세요.";
+    showFieldError(form, "amount", message, { assistiveOnly: true });
+    showScoreToast(form, message, "warning");
     isValid = false;
   } else if (amount === null || amount < minimum || amount > 100) {
     const message =
@@ -503,6 +504,7 @@ function clearFormFeedback(form) {
   errorLists.forEach((list) => {
     list.replaceChildren();
     list.hidden = true;
+    list.classList.toggle("errorlist--assistive", false);
   });
   form.querySelectorAll("[aria-invalid=true]").forEach((field) => {
     field.removeAttribute("aria-invalid");
@@ -518,7 +520,12 @@ function clearFormFeedback(form) {
   showFormStatus(form, "", "");
 }
 
-function showFieldError(form, field, message) {
+function showFieldError(
+  form,
+  field,
+  message,
+  { assistiveOnly = false } = {},
+) {
   const list = form.querySelector(`[data-error-for="${field}"]`);
   if (!list || typeof message !== "string") {
     return;
@@ -527,6 +534,7 @@ function showFieldError(form, field, message) {
   item.textContent = message;
   list.append(item);
   list.hidden = false;
+  list.classList.toggle("errorlist--assistive", assistiveOnly);
   form.querySelectorAll(`[name="${field}"]`).forEach((input) => {
     input.setAttribute("aria-invalid", "true");
     const describedBy = new Set(
@@ -534,12 +542,6 @@ function showFieldError(form, field, message) {
     );
     describedBy.add(list.id);
     input.setAttribute("aria-describedby", [...describedBy].filter(Boolean).join(" "));
-  });
-}
-
-function markFieldInvalid(form, field) {
-  form.querySelectorAll(`[name="${field}"]`).forEach((input) => {
-    input.setAttribute("aria-invalid", "true");
   });
 }
 

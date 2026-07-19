@@ -158,10 +158,25 @@ test("toast supports a labelled link and all documented tones", () => {
   assert.equal(fallback.className, "toast toast--info");
 });
 
-test("a new toast replaces the active toast and its timer", () => {
+test("multiple toasts remain available with independent timers", () => {
   const harness = createHarness();
   const first = harness.sandbox.woorisaiShowToast("첫 알림");
   const second = harness.sandbox.woorisaiShowToast("둘째 알림");
+
+  assert.equal(first.removed, false);
+  assert.equal(second.removed, false);
+  assert.deepEqual(harness.region.children, [first, second]);
+  assert.equal(harness.timers.size, 2);
+});
+
+test("an identical toast replaces its earlier copy and refreshes the timer", () => {
+  const harness = createHarness();
+  const first = harness.sandbox.woorisaiShowToast("같은 안내", {
+    tone: "warning",
+  });
+  const second = harness.sandbox.woorisaiShowToast("같은 안내", {
+    tone: "warning",
+  });
 
   assert.equal(first.removed, true);
   assert.equal(second.removed, false);
@@ -169,13 +184,13 @@ test("a new toast replaces the active toast and its timer", () => {
   assert.equal(harness.timers.size, 1);
 });
 
-test("toast timeout pauses for hover and focus before removing the toast", () => {
+test("a non-link toast is keyboard focusable and pauses its timeout", () => {
   const harness = createHarness();
   const toast = harness.sandbox.woorisaiShowToast("새로운 마음 기록", {
     duration: 10000,
-    href: "/history/31/",
   });
 
+  assert.equal(toast.tabIndex, 0);
   assert.equal(harness.timers.size, 1);
   toast.listeners.mouseenter();
   assert.equal(harness.timers.size, 0);
@@ -199,5 +214,5 @@ test("toast creates an accessible live region when the template region is absent
   assert.equal(harness.region.dataset.toastRegion, "");
   assert.equal(harness.region.attributes.role, "status");
   assert.equal(harness.region.attributes["aria-live"], "polite");
-  assert.equal(harness.region.attributes["aria-atomic"], "true");
+  assert.equal(harness.region.attributes["aria-atomic"], "false");
 });

@@ -1,7 +1,7 @@
 (() => {
   const DEFAULT_DURATION = 6000;
   const TOAST_TONES = new Set(["info", "success", "warning", "error"]);
-  let activeToastCleanup = null;
+  const activeToastCleanups = new Map();
 
   function getToastRegion() {
     let region = document.querySelector("[data-toast-region]");
@@ -12,7 +12,7 @@
     }
     region.setAttribute("role", "status");
     region.setAttribute("aria-live", "polite");
-    region.setAttribute("aria-atomic", "true");
+    region.setAttribute("aria-atomic", "false");
     return region;
   }
 
@@ -31,17 +31,26 @@
       duration = DEFAULT_DURATION,
     } = {},
   ) {
-    activeToastCleanup?.();
-
     const region = getToastRegion();
-    region.querySelector("[data-toast]")?.remove();
 
     const normalizedTone = TOAST_TONES.has(tone) ? tone : "info";
     const normalizedDuration = normalizeDuration(duration);
     const hasLink = typeof href === "string" && href.length > 0;
+    const normalizedMessage =
+      typeof message === "string" ? message : String(message ?? "");
+    const toastKey = JSON.stringify([
+      normalizedTone,
+      hasLink ? href : null,
+      normalizedMessage,
+    ]);
+    activeToastCleanups.get(toastKey)?.();
+
     const toast = document.createElement("div");
     toast.className = `toast toast--${normalizedTone}`;
     toast.dataset.toast = "";
+    if (!hasLink) {
+      toast.tabIndex = 0;
+    }
 
     const content = document.createElement(hasLink ? "a" : "div");
     content.className = "toast__content";
@@ -57,8 +66,7 @@
     mark.setAttribute("aria-hidden", "true");
     mark.textContent = "♥";
     const messageElement = document.createElement("strong");
-    messageElement.textContent =
-      typeof message === "string" ? message : String(message ?? "");
+    messageElement.textContent = normalizedMessage;
     content.append(mark, messageElement);
     toast.append(content);
     region.append(toast);
@@ -80,8 +88,8 @@
       isActive = false;
       pauseRemoval();
       toast.remove();
-      if (activeToastCleanup === cleanup) {
-        activeToastCleanup = null;
+      if (activeToastCleanups.get(toastKey) === cleanup) {
+        activeToastCleanups.delete(toastKey);
       }
     };
     const scheduleRemoval = () => {
@@ -109,7 +117,7 @@
       scheduleRemoval();
     });
 
-    activeToastCleanup = cleanup;
+    activeToastCleanups.set(toastKey, cleanup);
     scheduleRemoval();
     return toast;
   };

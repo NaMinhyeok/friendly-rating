@@ -150,11 +150,15 @@ function evaluateCommand({ operation, amount, reason, currentScore = null }) {
           },
         };
         const errors = [];
-        const markedFields = [];
         const statuses = [];
         const toasts = [];
-        showFieldError = (_form, field, message) => errors.push({ field, message });
-        markFieldInvalid = (_form, field) => markedFields.push(field);
+        showFieldError = (_form, field, message, options = {}) => {
+          const error = { field, message };
+          if (options.assistiveOnly) {
+            error.assistiveOnly = true;
+          }
+          errors.push(error);
+        };
         showFormStatus = (_form, message, state) => statuses.push({ message, state });
         focusFirstInvalidField = () => undefined;
         globalThis.woorisaiShowToast = (message, options) => {
@@ -162,7 +166,6 @@ function evaluateCommand({ operation, amount, reason, currentScore = null }) {
         };
         globalThis.commandResult = readScoreChangeCommand(form, fixture.currentScore);
         globalThis.commandErrors = errors;
-        globalThis.commandMarkedFields = markedFields;
         globalThis.commandStatuses = statuses;
         globalThis.commandToasts = toasts;
       }
@@ -175,7 +178,6 @@ function evaluateCommand({ operation, amount, reason, currentScore = null }) {
     JSON.stringify({
       command: sandbox.commandResult,
       errors: sandbox.commandErrors,
-      markedFields: sandbox.commandMarkedFields,
       statuses: sandbox.commandStatuses,
       toasts: sandbox.commandToasts,
     }),
@@ -362,8 +364,13 @@ test("a fractional score uses a warning toast and marks the input invalid", () =
   });
 
   assert.equal(result.command, null);
-  assert.deepEqual(result.errors, []);
-  assert.deepEqual(result.markedFields, ["amount"]);
+  assert.deepEqual(result.errors, [
+    {
+      assistiveOnly: true,
+      field: "amount",
+      message: "점수는 소수점 없이 정수로 입력해 주세요.",
+    },
+  ]);
   assert.deepEqual(result.statuses, []);
   assert.deepEqual(result.toasts, [
     {
@@ -463,7 +470,7 @@ test("targetScore API errors are attached to the shared amount input", () => {
   );
 });
 
-test("dashboard switches modes, submits a target once, and reconciles the score", async () => {
+test("dashboard submits delta and target changes once and reconciles the score", async () => {
   const scoreList = new FakeElement();
   const scoreListStatus = new FakeElement();
   scoreList.selectors["[data-score-list-status]"] = scoreListStatus;
@@ -481,7 +488,13 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   const amountLabel = new FakeElement();
   const amountHint = new FakeElement();
   const scorePreview = new FakeElement();
-  const errorLists = [new FakeElement(), new FakeElement(), new FakeElement()];
+  const operationErrors = new FakeElement();
+  operationErrors.id = "error-operation";
+  const amountErrors = new FakeElement();
+  amountErrors.id = "error-amount";
+  const reasonErrors = new FakeElement();
+  reasonErrors.id = "error-reason";
+  const errorLists = [operationErrors, amountErrors, reasonErrors];
 
   form.selectors = {
     "[data-character-current]": characterCount,
@@ -490,6 +503,7 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
     "[data-score-form-status]": formStatus,
     "[data-score-preview]": scorePreview,
     "[data-score-submit-label]": submitLabel,
+    '[data-error-for="amount"]': amountErrors,
     "[name=amount]": amount,
     "[name=csrfmiddlewaretoken]": csrf,
     "[name=operation]:checked": operation,
@@ -553,7 +567,17 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
       fetchCalls.push({ options, url });
       if (options.method === "POST") {
         postRequestCount += 1;
-        if (postRequestCount === 2) {
+        if (postRequestCount === 1) {
+          currentScore = 3;
+          return Promise.resolve(
+            jsonResponse(201, {
+              resultType: "SUCCESS",
+              error: null,
+              success: { delta: 3, resultingScore: 3 },
+            }),
+          );
+        }
+        if (postRequestCount === 3) {
           return Promise.resolve(
             jsonResponse(409, {
               resultType: "ERROR",
@@ -574,7 +598,7 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
               jsonResponse(201, {
                 resultType: "SUCCESS",
                 error: null,
-                success: { delta: 100, resultingScore: 100 },
+                success: { delta: 97, resultingScore: 100 },
               }),
             );
           };
@@ -596,6 +620,26 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   assert.equal(amountHint.textContent, "현재 점수에서 입력한 만큼 바뀌어요.");
   assert.equal(amount.min, "1");
   assert.equal(amount.placeholder, "1~100 입력");
+
+  let preventedSubmissions = 0;
+  const event = {
+    preventDefault() {
+      preventedSubmissions += 1;
+    },
+  };
+  form.listeners.submit(event);
+  await settleAsyncWork();
+
+  const deltaPostCall = fetchCalls.find((call) => call.options.method === "POST");
+  assert.deepEqual(JSON.parse(deltaPostCall.options.body), {
+    delta: 3,
+    reason: "고마워",
+  });
+  assert.equal(currentScore, 3);
+  assert.equal(descendantText(scoreList.children[0]).includes("3"), true);
+  assert.deepEqual(toastCalls, [
+    { message: "친밀도를 +3점 변경했어요.", tone: "success" },
+  ]);
 
   amount.value = "4";
   operation.value = "decrease";
@@ -621,22 +665,17 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   assert.equal(amount.value, "");
 
   amount.value = "100";
+  reason.value = "다시 힘내자";
   amount.listeners.input();
   assert.equal(scorePreview.hidden, false);
-  assert.equal(scorePreview.textContent, "현재 0점 → 100점 (+100점)");
+  assert.equal(scorePreview.textContent, "현재 3점 → 100점 (+97점)");
 
-  let preventedSubmissions = 0;
-  const event = {
-    preventDefault() {
-      preventedSubmissions += 1;
-    },
-  };
   form.listeners.submit(event);
   form.listeners.submit(event);
 
   assert.equal(
     fetchCalls.filter((call) => call.options.method === "POST").length,
-    1,
+    2,
   );
   assert.equal(amount.disabled, true);
   assert.equal(reason.disabled, true);
@@ -645,21 +684,22 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   resolvePost();
   await settleAsyncWork();
 
-  const postCall = fetchCalls.find((call) => call.options.method === "POST");
+  const postCall = fetchCalls.filter((call) => call.options.method === "POST")[1];
   assert.deepEqual(JSON.parse(postCall.options.body), {
     targetScore: 100,
-    reason: "고마워",
+    reason: "다시 힘내자",
   });
   assert.equal(postCall.options.credentials, "same-origin");
   assert.equal(postCall.options.headers["X-CSRFToken"], "rendered-csrf-token");
-  assert.equal(preventedSubmissions, 2);
+  assert.equal(preventedSubmissions, 3);
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    2,
+    3,
   );
   assert.equal(descendantText(scoreList.children[0]).includes("100"), true);
   assert.equal(formStatus.textContent, "");
   assert.deepEqual(toastCalls, [
+    { message: "친밀도를 +3점 변경했어요.", tone: "success" },
     { message: "친밀도를 100점으로 기록했어요.", tone: "success" },
   ]);
   assert.equal(amount.value, "");
@@ -674,15 +714,16 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
 
   assert.equal(
     fetchCalls.filter((call) => call.options.method === "POST").length,
-    2,
+    3,
   );
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    3,
+    4,
   );
   assert.equal(amount.value, "");
   assert.equal(formStatus.textContent, "");
   assert.deepEqual(toastCalls, [
+    { message: "친밀도를 +3점 변경했어요.", tone: "success" },
     { message: "친밀도를 100점으로 기록했어요.", tone: "success" },
     { message: "이미 100점이에요.", tone: "warning" },
   ]);
@@ -694,10 +735,17 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
 
   assert.equal(
     fetchCalls.filter((call) => call.options.method === "POST").length,
-    2,
+    3,
   );
   assert.equal(amount.attributes["aria-invalid"], "true");
   assert.equal(amount.focused, true);
+  assert.equal(amount.attributes["aria-describedby"], "error-amount");
+  assert.equal(amountErrors.hidden, false);
+  assert.equal(amountErrors.attributes["class:errorlist--assistive"], true);
+  assert.equal(
+    descendantText(amountErrors),
+    "점수는 소수점 없이 정수로 입력해 주세요.",
+  );
   assert.equal(formStatus.textContent, "");
   assert.deepEqual(toastCalls.at(-1), {
     message: "점수는 소수점 없이 정수로 입력해 주세요.",
@@ -709,14 +757,14 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   await settleAsyncWork();
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    4,
+    5,
   );
 
   globalListeners.pageshow({ persisted: true });
   await settleAsyncWork();
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    5,
+    6,
   );
 
   documentListeners["woorisai:push-message"]({
@@ -725,6 +773,6 @@ test("dashboard switches modes, submits a target once, and reconciles the score"
   await settleAsyncWork();
   assert.equal(
     fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
-    6,
+    7,
   );
 });
