@@ -1,4 +1,7 @@
-"""CI-only settings for strict Django deployment checks."""
+"""CI and local-harness settings for strict Django deployment checks."""
+
+import os
+from pathlib import Path
 
 from .settings import *  # noqa: F403
 
@@ -8,3 +11,7 @@ SILENCED_SYSTEM_CHECKS = [
     "security.W005",
     "security.W021",
 ]
+
+_harness_static_root = os.getenv("HARNESS_STATIC_ROOT")
+if _harness_static_root:
+    STATIC_ROOT = Path(_harness_static_root)
