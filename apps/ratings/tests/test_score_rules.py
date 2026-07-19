@@ -1,7 +1,12 @@
 import pytest
 from django.core.exceptions import ValidationError
 
-from ..score_rules import calculate_resulting_score, prepare_score_change
+from ..score_rules import (
+    ScoreUnchangedError,
+    calculate_resulting_score,
+    prepare_score_change,
+    prepare_target_score_change,
+)
 
 
 @pytest.mark.parametrize(
@@ -109,3 +114,57 @@ def test_rejects_a_non_string_reason():
         )
 
     assert raised.value.messages == ["변경 이유는 문자열이어야 합니다."]
+
+
+@pytest.mark.parametrize(
+    ("current_score", "target_score", "expected_delta"),
+    (
+        (1, 0, -1),
+        (35, 100, 65),
+    ),
+    ids=("lower-boundary", "upper-boundary"),
+)
+def test_prepares_an_absolute_target_as_a_delta(
+    current_score,
+    target_score,
+    expected_delta,
+):
+    change = prepare_target_score_change(
+        current_score=current_score,
+        target_score=target_score,
+        reason="  최종 점수로 기록  ",
+    )
+
+    assert change.delta == expected_delta
+    assert change.reason == "최종 점수로 기록"
+
+
+@pytest.mark.parametrize(
+    "target_score",
+    (True, 1.0, "1"),
+    ids=("boolean", "float", "string"),
+)
+def test_rejects_non_integer_absolute_targets(target_score):
+    with pytest.raises(ValidationError) as raised:
+        prepare_target_score_change(
+            current_score=0,
+            target_score=target_score,
+        )
+
+    assert raised.value.messages == ["최종 점수는 정수여야 합니다."]
+
+
+@pytest.mark.parametrize("target_score", (-1, 101), ids=("below-zero", "above-100"))
+def test_rejects_absolute_targets_outside_the_allowed_range(target_score):
+    with pytest.raises(ValidationError) as raised:
+        prepare_target_score_change(
+            current_score=50,
+            target_score=target_score,
+        )
+
+    assert raised.value.messages == ["최종 점수는 0점 이상 100점 이하여야 합니다."]
+
+
+def test_rejects_an_absolute_target_matching_the_current_score():
+    with pytest.raises(ScoreUnchangedError, match="현재 점수와 같습니다"):
+        prepare_target_score_change(current_score=50, target_score=50)

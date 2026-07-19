@@ -29,7 +29,10 @@ ERROR_PAIRS = {
         ("AUTHORIZATION", "PARTICIPANT_REQUIRED"),
     },
     "NotAcceptableErrorEnvelope": {("REQUEST", "NOT_ACCEPTABLE")},
-    "ScoreOutOfRangeErrorEnvelope": {("CONFLICT", "SCORE_OUT_OF_RANGE")},
+    "ScoreOutOfRangeErrorEnvelope": {
+        ("CONFLICT", "SCORE_OUT_OF_RANGE"),
+        ("CONFLICT", "SCORE_UNCHANGED"),
+    },
     "RequestBodyTooLargeErrorEnvelope": {("REQUEST", "REQUEST_BODY_TOO_LARGE")},
     "UnsupportedMediaTypeErrorEnvelope": {("REQUEST", "UNSUPPORTED_MEDIA_TYPE")},
     "InternalServerErrorEnvelope": {("SERVER", "INTERNAL_SERVER_ERROR")},
@@ -69,6 +72,9 @@ def _schema_types(document, schema) -> set[str]:
 
 def _enum_values(document, schema) -> list[str]:
     resolved = _resolve_schema(document, schema)
+    constant = resolved.get("const")
+    if isinstance(constant, str):
+        return [constant]
     values = resolved.get("enum")
     assert isinstance(values, list)
     return values
@@ -202,13 +208,21 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
     )
     assert request_schema["type"] == "object"
     assert request_schema["additionalProperties"] is False
-    assert request_schema["required"] == ["delta"]
-    assert set(request_schema["properties"]) == {"delta", "reason"}
+    assert "required" not in request_schema
+    assert request_schema["oneOf"] == [
+        {"required": ["delta"]},
+        {"required": ["targetScore"]},
+    ]
+    assert set(request_schema["properties"]) == {"delta", "targetScore", "reason"}
     delta_schema = request_schema["properties"]["delta"]
     assert delta_schema["type"] == "integer"
     assert delta_schema["maximum"] == 100
     assert delta_schema["minimum"] == -100
     assert delta_schema["not"] == {"const": 0}
+    target_score_schema = request_schema["properties"]["targetScore"]
+    assert target_score_schema["type"] == "integer"
+    assert target_score_schema["minimum"] == 0
+    assert target_score_schema["maximum"] == 100
     assert request_schema["properties"]["reason"]["type"] == "string"
     assert request_schema["properties"]["reason"]["maxLength"] == 200
 

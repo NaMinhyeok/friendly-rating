@@ -68,6 +68,14 @@ class ScoreOutOfRange(ApiProblem):
     reason = "점수 변경 결과는 0점 이상 100점 이하여야 합니다."
 
 
+class ScoreUnchanged(ApiProblem):
+    status_code = 409
+    default_code = "score_unchanged"
+    error_type = ErrorType.CONFLICT
+    error_code = ErrorCode.SCORE_UNCHANGED
+    reason = "최종 점수는 현재 점수와 달라야 합니다."
+
+
 class RequestBodyTooLarge(ApiProblem):
     status_code = 413
     default_code = "request_body_too_large"

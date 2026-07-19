@@ -183,6 +183,49 @@ def test_participant_can_change_their_score_with_rendered_csrf_and_same_origin(
     assert [score["isMine"] for score in scores] == [True, False]
 
 
+@pytest.mark.parametrize(
+    ("current_score", "target_score", "expected_delta"),
+    (
+        (25, 100, 75),
+        (75, 0, -75),
+    ),
+    ids=("upper-boundary", "lower-boundary"),
+)
+def test_participant_can_set_their_final_score_with_a_target_score(
+    participant_pair,
+    current_score,
+    target_score,
+    expected_delta,
+):
+    participant_pair.first_to_second.current_score = current_score
+    participant_pair.first_to_second.save(update_fields=("current_score",))
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _post_json(
+        client,
+        {"targetScore": target_score, "reason": "  최종 점수로 기록  "},
+        csrf_token=csrf_token,
+    )
+
+    participant_pair.first_to_second.refresh_from_db()
+    participant_pair.second_to_first.refresh_from_db()
+    change = ScoreChange.objects.get()
+    assert response.status_code == 201
+    assert response.json()["success"] == {
+        "id": change.pk,
+        "delta": expected_delta,
+        "reason": "최종 점수로 기록",
+        "resultingScore": target_score,
+        "createdAt": response.json()["success"]["createdAt"],
+    }
+    assert participant_pair.first_to_second.current_score == target_score
+    assert participant_pair.second_to_first.current_score == 0
+    assert change.relationship_score == participant_pair.first_to_second
+    assert change.changed_by == participant_pair.first
+    assert change.delta == expected_delta
+    assert change.resulting_score == target_score
+
+
 def test_second_participant_changes_only_their_outgoing_score(participant_pair):
     participant_pair.first_to_second.current_score = 20
     participant_pair.first_to_second.save(update_fields=("current_score",))
@@ -221,6 +264,20 @@ def test_json_number_with_integral_value_matches_openapi_integer(participant_pai
     assert response.json()["success"]["delta"] == 1
     assert participant_pair.first_to_second.current_score == 1
     assert change.delta == 1
+
+
+def test_integral_json_number_is_accepted_as_a_target_score(participant_pair):
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _post_json(client, {"targetScore": 100.0}, csrf_token=csrf_token)
+
+    participant_pair.first_to_second.refresh_from_db()
+    change = ScoreChange.objects.get()
+    assert response.status_code == 201
+    assert response.json()["success"]["delta"] == 100
+    assert response.json()["success"]["resultingScore"] == 100
+    assert participant_pair.first_to_second.current_score == 100
+    assert change.delta == 100
 
 
 def test_anonymous_request_returns_json_authentication_error_without_writing(
@@ -388,11 +445,19 @@ def test_score_change_api_only_renders_json_without_writing(participant_pair):
     ("payload", "expected_field", "expected_code"),
     (
         (None, None, "INVALID_TYPE"),
-        ({}, "delta", "REQUIRED"),
+        ({}, None, "EXACTLY_ONE"),
+        ({"reason": "이유만 입력"}, None, "EXACTLY_ONE"),
+        ({"delta": 1, "targetScore": 10}, None, "EXACTLY_ONE"),
         ({"delta": None}, "delta", "INVALID_TYPE"),
         ({"delta": 0}, "delta", "NON_ZERO"),
         ({"delta": 101}, "delta", "MAX_VALUE"),
         ({"delta": -101}, "delta", "MIN_VALUE"),
+        ({"targetScore": None}, "targetScore", "INVALID_TYPE"),
+        ({"targetScore": -1}, "targetScore", "MIN_VALUE"),
+        ({"targetScore": 101}, "targetScore", "MAX_VALUE"),
+        ({"targetScore": True}, "targetScore", "INVALID_TYPE"),
+        ({"targetScore": "100"}, "targetScore", "INVALID_TYPE"),
+        ({"targetScore": 99.5}, "targetScore", "INVALID_TYPE"),
         ({"delta": 1, "reason": "가" * 201}, "reason", "MAX_LENGTH"),
         ({"delta": 1, "reason": " " + "가" * 200}, "reason", "MAX_LENGTH"),
         ({"delta": True}, "delta", "INVALID_TYPE"),
@@ -402,6 +467,7 @@ def test_score_change_api_only_renders_json_without_writing(participant_pair):
         ({"delta": 1, "reason": 7}, "reason", "INVALID_TYPE"),
         ([{"delta": 1}], None, "INVALID_TYPE"),
         ({"delta": 1, "unexpected": True}, "unexpected", "UNKNOWN_FIELD"),
+        ({"target_score": 100}, "targetScore", "UNKNOWN_FIELD"),
     ),
 )
 def test_score_change_api_strictly_validates_json_without_writing(
@@ -446,6 +512,31 @@ def test_score_change_api_returns_conflict_for_result_outside_score_range(
         error_code="SCORE_OUT_OF_RANGE",
     )
     _assert_no_score_writes(participant_pair)
+
+
+def test_score_change_api_returns_conflict_when_target_matches_current_score(
+    participant_pair,
+):
+    participant_pair.first_to_second.current_score = 100
+    participant_pair.first_to_second.save(update_fields=("current_score",))
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _post_json(client, {"targetScore": 100}, csrf_token=csrf_token)
+
+    body = _assert_error_response(
+        response,
+        status_code=409,
+        error_type="CONFLICT",
+        error_code="SCORE_UNCHANGED",
+    )
+    error = body["error"]
+    assert isinstance(error, dict)
+    assert error["reason"] == "이미 100점이에요."
+    participant_pair.first_to_second.refresh_from_db()
+    participant_pair.second_to_first.refresh_from_db()
+    assert participant_pair.first_to_second.current_score == 100
+    assert participant_pair.second_to_first.current_score == 0
+    assert not ScoreChange.objects.exists()
 
 
 def test_score_change_api_rejects_request_body_over_four_kibibytes_without_writing(

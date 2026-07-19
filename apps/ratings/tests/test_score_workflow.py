@@ -34,6 +34,16 @@ def test_dashboard_is_an_api_backed_shell(client, participant_pair):
     assert 'data-scores-url="/api/v1/relationship-scores/"' in content
     assert 'data-score-changes-url="/api/v1/score-changes/"' in content
     assert "ratings/dashboard.js" in content
+    assert "점수를 어떻게 바꿀까요?" in content
+    assert 'name="operation" value="increase" checked' in content
+    assert 'name="operation" value="decrease"' in content
+    assert 'name="operation" value="target"' in content
+    assert "data-score-amount-label" in content
+    assert "data-score-amount-hint" in content
+    assert 'aria-describedby="id_amount_help id_score_preview"' in content
+    assert "data-score-preview" in content
+    assert 'aria-live="polite"' in content
+    assert 'aria-atomic="true"' in content
     assert "<noscript>" in content
     assert "JavaScript를 켜 주세요" in content
     assert 'action="/score/change/"' not in content
