@@ -108,6 +108,8 @@ function threadPayload({ comments = [comment()] } = {}) {
 }
 
 function createThreadHarness({
+  AbortControllerImplementation,
+  captureCommentMedia = false,
   fetchImplementation,
   search = "?from=push",
   withMedia = false,
@@ -193,6 +195,9 @@ function createThreadHarness({
   };
   const defaultResponse = jsonResponse(200, threadPayload());
   const sandbox = {
+    ...(AbortControllerImplementation
+      ? { AbortController: AbortControllerImplementation }
+      : {}),
     console,
     document,
     fetch(url, options = {}) {
@@ -208,7 +213,18 @@ function createThreadHarness({
     },
   };
 
-  vm.runInNewContext(threadSource, sandbox, { filename: threadScriptPath });
+  const executableSource = captureCommentMedia
+    ? `${threadSource}
+      globalThis.commentMediaForTest = initializeCommentMedia(
+        document.querySelector("[data-score-thread-root]"),
+        document
+          .querySelector("[data-score-thread-root]")
+          .querySelector("[data-comment-form]"),
+        { getScoreChangeId: () => 31 },
+      );
+      globalThis.commentMediaForTest.setDisabled(false);`
+    : threadSource;
+  vm.runInNewContext(executableSource, sandbox, { filename: threadScriptPath });
 
   return {
     assignedLocations,
@@ -217,6 +233,7 @@ function createThreadHarness({
     commentCount,
     commentEmpty,
     commentList,
+    commentMedia: sandbox.commentMediaForTest,
     content,
     createdTags,
     document,
@@ -737,6 +754,277 @@ test("video selection preuploads immediately and submit reuses the in-flight upl
   assert.equal(harness.createdTags.includes("video"), true);
 });
 
+test("removing an in-flight video aborts its PUT and discards the upload", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000012";
+  const file = {
+    name: "삭제할-영상.mp4",
+    size: 4096,
+    type: "video/mp4",
+  };
+  let resolvePut;
+  const harness = createThreadHarness({
+    AbortControllerImplementation: AbortController,
+    withMedia: true,
+    fetchImplementation(url) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/remove-video",
+              requiredHeaders: { "Content-Type": file.type },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/remove-video") {
+        return new Promise((resolve) => {
+          resolvePut = () => resolve({ ok: true, redirected: false });
+        });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/discard/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: null,
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/31/comments/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: comment({
+              id: 98,
+              content: "영상은 다음에",
+              isMine: true,
+              attachments: [],
+            }),
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+
+  const directPut = harness.fetchCalls.find(
+    (call) => call.url === "https://r2.example.test/pending/remove-video",
+  );
+  assert.equal(directPut.options.signal.aborted, false);
+  harness.mediaSelection.children[0].children[2].listeners.click();
+  await settleAsyncWork();
+
+  assert.equal(directPut.options.signal.aborted, true);
+  assert.equal(harness.mediaSelection.hidden, true);
+  const discardCall = harness.fetchCalls.find(
+    (call) => call.url === `/api/v1/media-uploads/${uploadId}/discard/`,
+  );
+  assert.equal(discardCall.options.method, "POST");
+  assert.equal(discardCall.options.body, "{}");
+  assert.equal(
+    discardCall.options.headers["X-CSRFToken"],
+    "rendered-csrf-token",
+  );
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) => call.url === `/api/v1/media-uploads/${uploadId}/complete/`,
+    ),
+    false,
+  );
+
+  resolvePut();
+  await settleAsyncWork();
+  harness.textarea.value = "영상은 다음에";
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  const commentCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/score-changes/31/comments/",
+  );
+  assert.deepEqual(JSON.parse(commentCall.options.body), {
+    content: "영상은 다음에",
+  });
+});
+
+test("removal racing upload completion discards once and never attaches the ID", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000013";
+  const file = { name: "완료-직전.jpg", size: 1024, type: "image/jpeg" };
+  let resolveComplete;
+  const harness = createThreadHarness({
+    withMedia: true,
+    fetchImplementation(url) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/complete-race",
+              requiredHeaders: { "Content-Type": file.type },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/complete-race") {
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/complete/`) {
+        return new Promise((resolve) => {
+          resolveComplete = () =>
+            resolve(
+              jsonResponse(200, {
+                resultType: "SUCCESS",
+                error: null,
+                success: {
+                  id: uploadId,
+                  kind: "image",
+                  fileName: file.name,
+                  contentType: file.type,
+                  byteSize: file.size,
+                },
+              }),
+            );
+        });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/discard/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: null,
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/31/comments/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: comment({
+              id: 99,
+              content: "사진 없이 남겨요",
+              isMine: true,
+              attachments: [],
+            }),
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.equal(typeof resolveComplete, "function");
+
+  harness.mediaSelection.children[0].children[2].listeners.click();
+  await settleAsyncWork();
+  resolveComplete();
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) => call.url === `/api/v1/media-uploads/${uploadId}/discard/`,
+    ).length,
+    1,
+  );
+  harness.textarea.value = "사진 없이 남겨요";
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  const commentCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/score-changes/31/comments/",
+  );
+  assert.deepEqual(JSON.parse(commentCall.options.body), {
+    content: "사진 없이 남겨요",
+  });
+});
+
+test("clearing before upload initiation resolves discards without starting the PUT", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000014";
+  const file = { name: "바로-지움.webp", size: 512, type: "image/webp" };
+  let resolveInitiate;
+  const harness = createThreadHarness({
+    captureCommentMedia: true,
+    withMedia: true,
+    fetchImplementation(url) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        return new Promise((resolve) => {
+          resolveInitiate = () =>
+            resolve(
+              jsonResponse(201, {
+                resultType: "SUCCESS",
+                error: null,
+                success: {
+                  uploadId,
+                  uploadUrl: "https://r2.example.test/pending/cleared",
+                  requiredHeaders: { "Content-Type": file.type },
+                  expiresAt: "2026-07-19T12:00:00Z",
+                },
+              }),
+            );
+        });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/discard/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: null,
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  assert.equal(typeof resolveInitiate, "function");
+  harness.commentMedia.clear();
+  assert.equal(harness.mediaSelection.hidden, true);
+
+  resolveInitiate();
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) => call.url === `/api/v1/media-uploads/${uploadId}/discard/`,
+    ).length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) => call.url === "https://r2.example.test/pending/cleared",
+    ),
+    false,
+  );
+});
+
 test("a failed background upload keeps its selection and retries on submit", async () => {
   const uploadId = "00000000-0000-4000-8000-000000000021";
   const file = { name: "다시-시도.jpg", size: 1024, type: "image/jpeg" };
@@ -844,7 +1132,155 @@ test("a failed background upload keeps its selection and retries on submit", asy
   assert.equal(harness.commentList.children.length, 1);
 });
 
-test("concurrent image preuploads preserve selection order and ignore removed items", async () => {
+test("retry discards a failed upload first and retries a rejected discard", async () => {
+  const failedUploadId = "00000000-0000-4000-8000-000000000022";
+  const retryUploadId = "00000000-0000-4000-8000-000000000023";
+  const file = { name: "정리-후-재시도.jpg", size: 2048, type: "image/jpeg" };
+  let discardCount = 0;
+  let initiateCount = 0;
+  const harness = createThreadHarness({
+    withMedia: true,
+    fetchImplementation(url) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        initiateCount += 1;
+        const uploadId = initiateCount === 1 ? failedUploadId : retryUploadId;
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl:
+                initiateCount === 1
+                  ? "https://r2.example.test/pending/failed-put"
+                  : "https://r2.example.test/pending/retry-put",
+              requiredHeaders: { "Content-Type": file.type },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/failed-put") {
+        return Promise.resolve({ ok: false, redirected: false });
+      }
+      if (url === `/api/v1/media-uploads/${failedUploadId}/discard/`) {
+        discardCount += 1;
+        if (discardCount === 1) {
+          return Promise.resolve(
+            jsonResponse(503, {
+              resultType: "ERROR",
+              error: {
+                errorType: "SERVER",
+                errorCode: "MEDIA_UPLOADS_UNAVAILABLE",
+                reason: "기존 업로드를 정리하지 못했어요.",
+                details: [],
+              },
+              success: null,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: null,
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/retry-put") {
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (url === `/api/v1/media-uploads/${retryUploadId}/complete/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              id: retryUploadId,
+              kind: "image",
+              fileName: file.name,
+              contentType: file.type,
+              byteSize: file.size,
+            },
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/31/comments/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: comment({
+              id: 100,
+              content: "",
+              isMine: true,
+              attachments: [
+                {
+                  id: retryUploadId,
+                  kind: "image",
+                  fileName: file.name,
+                  contentType: file.type,
+                  byteSize: file.size,
+                  contentUrl: `/media/${retryUploadId}/content/`,
+                },
+              ],
+            }),
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.equal(initiateCount, 1);
+  assert.match(harness.mediaStatus.textContent, /업로드하지 못했어요/);
+
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+  assert.equal(discardCount, 1);
+  assert.equal(initiateCount, 1);
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) => call.url === "/api/v1/score-changes/31/comments/",
+    ),
+    false,
+  );
+
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  assert.equal(discardCount, 2);
+  assert.equal(initiateCount, 2);
+  const callUrls = harness.fetchCalls.map((call) => call.url);
+  assert.ok(
+    callUrls.lastIndexOf(
+      `/api/v1/media-uploads/${failedUploadId}/discard/`,
+    ) < callUrls.lastIndexOf("/api/v1/media-uploads/"),
+  );
+  const commentCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/score-changes/31/comments/",
+  );
+  assert.deepEqual(JSON.parse(commentCall.options.body), {
+    content: "",
+    mediaUploadIds: [retryUploadId],
+  });
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) =>
+        call.url === `/api/v1/media-uploads/${failedUploadId}/complete/`,
+    ),
+    false,
+  );
+});
+
+test("concurrent image preuploads preserve order and discard removed items", async () => {
   const files = [
     { name: "첫째.jpg", size: 101, type: "image/jpeg" },
     { name: "둘째.png", size: 102, type: "image/png" },
@@ -890,8 +1326,21 @@ test("concurrent image preuploads preserve selection order and ignore removed it
           putResolvers.set(index, () => resolve({ ok: true, redirected: false }));
         });
       }
+      const discardedIndex = uploadIds.findIndex(
+        (uploadId) =>
+          url === `/api/v1/media-uploads/${uploadId}/discard/`,
+      );
+      if (discardedIndex >= 0) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: null,
+          }),
+        );
+      }
       const completedIndex = uploadIds.findIndex((uploadId) =>
-        url.includes(uploadId),
+        url === `/api/v1/media-uploads/${uploadId}/complete/`,
       );
       if (completedIndex >= 0) {
         const attachment = attachments[completedIndex];
@@ -961,6 +1410,13 @@ test("concurrent image preuploads preserve selection order and ignore removed it
     harness.fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/")
       .length,
     3,
+  );
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) =>
+        call.url === `/api/v1/media-uploads/${uploadIds[1]}/discard/`,
+    ).length,
+    1,
   );
 });
 

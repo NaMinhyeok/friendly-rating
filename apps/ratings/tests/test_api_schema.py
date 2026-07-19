@@ -114,6 +114,7 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
     assert set(document["paths"]) == {
         "/api/v1/media-uploads/",
         "/api/v1/media-uploads/{upload_id}/complete/",
+        "/api/v1/media-uploads/{upload_id}/discard/",
         "/api/v1/push-devices/register/",
         "/api/v1/push-devices/unregister/",
         "/api/v1/relationship-scores/",
@@ -276,7 +277,7 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
     }
 
 
-def test_media_upload_operations_declare_direct_upload_and_completion_contract(client):
+def test_media_upload_operations_declare_direct_upload_lifecycle_contract(client):
     document = client.get(
         reverse("api-schema"),
         HTTP_ACCEPT="application/json",
@@ -284,8 +285,9 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
     paths = document["paths"]
     initiate = paths["/api/v1/media-uploads/"]["post"]
     complete = paths["/api/v1/media-uploads/{upload_id}/complete/"]["post"]
+    discard = paths["/api/v1/media-uploads/{upload_id}/discard/"]["post"]
 
-    for operation in (initiate, complete):
+    for operation in (initiate, complete, discard):
         assert operation["security"] == [{"cookieAuth": []}]
         csrf = next(
             parameter
@@ -358,23 +360,24 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
         },
     ]
 
-    complete_parameters = {
-        parameter["name"]: parameter for parameter in complete["parameters"]
-    }
-    assert complete_parameters["upload_id"] == {
-        "in": "path",
-        "name": "upload_id",
-        "schema": {"type": "string", "format": "uuid"},
-        "required": True,
-    }
-    complete_request = _resolve_schema(
-        document,
-        complete["requestBody"]["content"]["application/json"]["schema"],
-    )
-    assert complete_request == {
-        "type": "object",
-        "additionalProperties": False,
-    }
+    for operation in (complete, discard):
+        parameters = {
+            parameter["name"]: parameter for parameter in operation["parameters"]
+        }
+        assert parameters["upload_id"] == {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {"type": "string", "format": "uuid"},
+            "required": True,
+        }
+        request_schema = _resolve_schema(
+            document,
+            operation["requestBody"]["content"]["application/json"]["schema"],
+        )
+        assert request_schema == {
+            "type": "object",
+            "additionalProperties": False,
+        }
 
     shared_error_responses = {
         "400": "BadRequestErrorEnvelope",
@@ -390,6 +393,7 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
     operation_contracts = (
         (initiate, "201", "MediaUploadInitiatedSuccessEnvelope"),
         (complete, "200", "CompletedMediaUploadSuccessEnvelope"),
+        (discard, "200", "MediaUploadDiscardedSuccessEnvelope"),
     )
     for operation, success_status, success_component in operation_contracts:
         response_components = {
@@ -420,6 +424,10 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
     assert schemas["CompletedMediaUploadSuccessEnvelope"]["properties"]["success"] == {
         "$ref": "#/components/schemas/CompletedMediaUploadData"
     }
+    assert _schema_types(
+        document,
+        schemas["MediaUploadDiscardedSuccessEnvelope"]["properties"]["success"],
+    ) == {"null"}
     completed_data = schemas["CompletedMediaUploadData"]
     completed_fields = {"id", "kind", "fileName", "contentType", "byteSize"}
     assert set(completed_data["required"]) == completed_fields

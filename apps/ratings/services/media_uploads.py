@@ -101,6 +101,13 @@ class _CompletionClaim:
     reclaim_token: UUID | None
 
 
+@dataclass(frozen=True, slots=True)
+class _DiscardClaim:
+    upload_id: UUID
+    uploader_id: int
+    object_keys: tuple[str, ...]
+
+
 def _positive_setting(name: str, default: int) -> int:
     value = getattr(settings, name, default)
     if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
@@ -747,6 +754,97 @@ def complete_media_upload(
     return CompletedMediaUpload(attachment=ready_attachment)
 
 
+@transaction.atomic(durable=True)
+def _claim_media_upload_discard(
+    *,
+    upload_id: UUID,
+    uploader: Participant,
+) -> _DiscardClaim:
+    try:
+        attachment = MediaAttachment.objects.select_for_update().get(pk=upload_id)
+    except MediaAttachment.DoesNotExist as error:
+        raise MediaUploadNotFoundError("업로드를 찾을 수 없어요.") from error
+
+    if uploader.pk is None or attachment.uploader_id != uploader.pk:
+        raise MediaUploadPermissionError("이 업로드를 폐기할 수 없어요.")
+    if attachment.status == MediaAttachment.Status.ATTACHED:
+        raise MediaUploadStateError("이미 사용한 업로드예요.")
+    if attachment.status not in {
+        MediaAttachment.Status.PENDING,
+        MediaAttachment.Status.FINALIZING,
+        MediaAttachment.Status.RECLAIMING,
+        MediaAttachment.Status.READY,
+        MediaAttachment.Status.DELETING,
+    }:
+        raise MediaUploadStateError("업로드 상태가 변경되어 폐기할 수 없어요.")
+
+    # Commit this tombstone before external I/O. A concurrent finalizer can no
+    # longer mark its claim READY, while a failed object delete remains
+    # discoverable through the row for an idempotent retry.
+    discard_started_at = timezone.now()
+    if (
+        attachment.status != MediaAttachment.Status.DELETING
+        or attachment.expires_at > discard_started_at
+    ):
+        attachment.status = MediaAttachment.Status.DELETING
+        attachment.expires_at = discard_started_at
+        attachment.save(update_fields=("status", "expires_at"))
+
+    object_keys = [f"pending/{attachment.pk}", attachment.object_key]
+    if attachment.finalization_token is not None:
+        object_keys.append(f"media/{attachment.pk}/{attachment.finalization_token}")
+    return _DiscardClaim(
+        upload_id=attachment.pk,
+        uploader_id=attachment.uploader_id,
+        object_keys=tuple(dict.fromkeys(object_keys)),
+    )
+
+
+@transaction.atomic(durable=True)
+def _finish_media_upload_discard(*, claim: _DiscardClaim) -> None:
+    try:
+        attachment = MediaAttachment.objects.select_for_update().get(
+            pk=claim.upload_id,
+            uploader_id=claim.uploader_id,
+            status=MediaAttachment.Status.DELETING,
+        )
+    except MediaAttachment.DoesNotExist:
+        # Another retry may already have removed the same tombstone.
+        return
+    attachment.delete()
+
+
+def discard_media_upload(
+    *,
+    upload_id: UUID,
+    uploader: Participant,
+    storage: MediaStorageGateway | None = None,
+) -> None:
+    try:
+        storage_gateway = storage or get_media_storage_gateway()
+    except Exception as error:
+        raise MediaUploadStorageError("파일 저장소에 연결하지 못했어요.") from error
+
+    claim = _claim_media_upload_discard(
+        upload_id=upload_id,
+        uploader=uploader,
+    )
+    deletion_failed = False
+    for object_key in claim.object_keys:
+        try:
+            storage_gateway.delete_object(object_key=object_key)
+        except Exception:
+            deletion_failed = True
+            logger.warning(
+                "Could not discard a private media upload object.",
+                exc_info=True,
+            )
+    if deletion_failed:
+        raise MediaUploadStorageError("업로드된 파일을 정리하지 못했어요.")
+
+    _finish_media_upload_discard(claim=claim)
+
+
 def _normalize_upload_ids(upload_ids: Sequence[UUID]) -> tuple[UUID, ...]:
     normalized_ids = tuple(upload_ids)
     if any(not isinstance(upload_id, UUID) for upload_id in normalized_ids):
@@ -951,6 +1049,7 @@ __all__ = (
     "content_type_matches_signature",
     "create_media_upload",
     "detect_media_content_type",
+    "discard_media_upload",
     "finalize_media_upload",
     "generate_media_download_url",
     "initiate_media_upload",

@@ -3,6 +3,7 @@ from django.urls import path
 from .views import (
     ApiNotFoundView,
     MediaUploadCompleteView,
+    MediaUploadDiscardView,
     MediaUploadInitiateView,
     PushDeviceRegisterView,
     PushDeviceUnregisterView,
@@ -24,6 +25,11 @@ urlpatterns = [
         "media-uploads/<uuid:upload_id>/complete/",
         MediaUploadCompleteView.as_view(),
         name="media-upload-complete",
+    ),
+    path(
+        "media-uploads/<uuid:upload_id>/discard/",
+        MediaUploadDiscardView.as_view(),
+        name="media-upload-discard",
     ),
     path(
         "relationship-scores/",

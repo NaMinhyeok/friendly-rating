@@ -10,6 +10,7 @@ from django.utils import timezone
 from ..media_storage import MediaStorageGateway, StoredMediaObject
 from ..models import MediaAttachment, ScoreChange, ScoreChangeComment
 from ..services import (
+    MediaUploadNotFoundError,
     MediaUploadPermissionError,
     MediaUploadStateError,
     MediaUploadStorageError,
@@ -17,6 +18,7 @@ from ..services import (
     add_score_change_comment,
     change_relationship_score,
     complete_media_upload,
+    discard_media_upload,
     generate_media_download_url,
     initiate_media_upload,
 )
@@ -272,6 +274,228 @@ def test_completion_validates_and_promotes_to_an_immutable_key(participant_pair)
     )
     assert repeated.attachment.pk == attachment.pk
     assert len(storage.promotion_requests) == 1
+
+
+@pytest.mark.parametrize(
+    ("status", "has_claim_token", "is_ready"),
+    (
+        (MediaAttachment.Status.PENDING, False, False),
+        (MediaAttachment.Status.FINALIZING, True, False),
+        (MediaAttachment.Status.RECLAIMING, True, False),
+        (MediaAttachment.Status.READY, False, True),
+        (MediaAttachment.Status.DELETING, True, False),
+    ),
+)
+def test_discard_tombstones_and_removes_every_unattached_upload_state(
+    participant_pair,
+    status,
+    has_claim_token,
+    is_ready,
+):
+    upload_id = uuid4()
+    pending_key = f"pending/{upload_id}"
+    claim_token = uuid4() if has_claim_token else None
+    ready_key = f"media/{upload_id}/{uuid4()}"
+    attachment = MediaAttachment.objects.create(
+        id=upload_id,
+        uploader=participant_pair.first,
+        purpose=MediaAttachment.Purpose.SCORE_CHANGE,
+        kind=MediaAttachment.Kind.IMAGE,
+        status=status,
+        object_key=ready_key if is_ready else pending_key,
+        original_name="discard.jpg",
+        content_type="image/jpeg",
+        expected_size=512,
+        actual_size=512 if is_ready else None,
+        etag="ready-etag" if is_ready else "",
+        expires_at=timezone.now() + timedelta(minutes=10),
+        finalized_at=timezone.now() if is_ready else None,
+        finalization_token=claim_token,
+    )
+    storage = FakeMediaStorage(observe_upload_id=attachment.pk)
+
+    discard_media_upload(
+        upload_id=attachment.pk,
+        uploader=participant_pair.first,
+        storage=storage,
+    )
+
+    assert not MediaAttachment.objects.filter(pk=attachment.pk).exists()
+    expected_keys = [pending_key]
+    if is_ready:
+        expected_keys.append(ready_key)
+    if claim_token is not None:
+        expected_keys.append(f"media/{attachment.pk}/{claim_token}")
+    assert storage.deletion_requests == expected_keys
+    assert storage.deletion_statuses == [
+        (object_key, MediaAttachment.Status.DELETING) for object_key in expected_keys
+    ]
+
+
+def test_discard_rejects_another_uploader_without_changing_state(participant_pair):
+    attachment = _pending_attachment(
+        uploader=participant_pair.first,
+        suffix="discard-owner",
+        expected_size=512,
+    )
+    storage = FakeMediaStorage()
+
+    with pytest.raises(MediaUploadPermissionError, match="폐기할 수 없어요"):
+        discard_media_upload(
+            upload_id=attachment.pk,
+            uploader=participant_pair.second,
+            storage=storage,
+        )
+
+    attachment.refresh_from_db()
+    assert attachment.status == MediaAttachment.Status.PENDING
+    assert storage.deletion_requests == []
+
+
+def test_discard_refuses_an_attachment_already_used_by_a_score_change(
+    participant_pair,
+):
+    attachment = _ready_attachment(
+        uploader=participant_pair.first,
+        purpose=MediaAttachment.Purpose.SCORE_CHANGE,
+        suffix="discard-attached",
+    )
+    change = change_relationship_score(
+        source_participant=participant_pair.first,
+        delta=1,
+        media_upload_ids=(attachment.pk,),
+    )
+    storage = FakeMediaStorage()
+
+    with pytest.raises(MediaUploadStateError, match="이미 사용한"):
+        discard_media_upload(
+            upload_id=attachment.pk,
+            uploader=participant_pair.first,
+            storage=storage,
+        )
+
+    attachment.refresh_from_db()
+    assert attachment.status == MediaAttachment.Status.ATTACHED
+    assert attachment.score_change == change
+    assert storage.deletion_requests == []
+
+
+def test_discard_failure_keeps_a_retryable_tombstone_and_attempts_every_key(
+    participant_pair,
+):
+    upload_id = uuid4()
+    pending_key = f"pending/{upload_id}"
+    claim_token = uuid4()
+    final_key = f"media/{upload_id}/{claim_token}"
+    attachment = MediaAttachment.objects.create(
+        id=upload_id,
+        uploader=participant_pair.first,
+        purpose=MediaAttachment.Purpose.SCORE_CHANGE,
+        kind=MediaAttachment.Kind.IMAGE,
+        status=MediaAttachment.Status.FINALIZING,
+        object_key=pending_key,
+        original_name="retry-discard.jpg",
+        content_type="image/jpeg",
+        expected_size=512,
+        expires_at=timezone.now() + timedelta(minutes=10),
+        finalization_token=claim_token,
+    )
+    storage = FakeMediaStorage(
+        deletion_failures={pending_key},
+        observe_upload_id=attachment.pk,
+    )
+
+    with pytest.raises(MediaUploadStorageError, match="정리하지 못했어요"):
+        discard_media_upload(
+            upload_id=attachment.pk,
+            uploader=participant_pair.first,
+            storage=storage,
+        )
+
+    attachment.refresh_from_db()
+    assert attachment.status == MediaAttachment.Status.DELETING
+    assert attachment.expires_at <= timezone.now()
+    assert attachment.finalization_token == claim_token
+    assert storage.deletion_requests == [pending_key, final_key]
+    assert storage.deletion_statuses == [
+        (pending_key, MediaAttachment.Status.DELETING),
+        (final_key, MediaAttachment.Status.DELETING),
+    ]
+
+    storage.deletion_failures.clear()
+    discard_media_upload(
+        upload_id=attachment.pk,
+        uploader=participant_pair.first,
+        storage=storage,
+    )
+
+    assert not MediaAttachment.objects.filter(pk=attachment.pk).exists()
+    assert storage.deletion_requests == [
+        pending_key,
+        final_key,
+        pending_key,
+        final_key,
+    ]
+
+
+def test_discard_invalidates_a_completion_between_promotion_and_ready(
+    participant_pair,
+):
+    storage = FakeMediaStorage(
+        stored_object=StoredMediaObject(
+            size=512,
+            content_type="image/jpeg",
+            etag="accepted-etag",
+            initial_bytes=b"\xff\xd8\xffpayload",
+        )
+    )
+    initiated = initiate_media_upload(
+        uploader=participant_pair.first,
+        purpose=MediaAttachment.Purpose.SCORE_CHANGE,
+        kind=MediaAttachment.Kind.IMAGE,
+        original_name="discard-race.jpg",
+        content_type="image/jpeg",
+        expected_size=512,
+        storage=storage,
+    )
+
+    class DiscardDuringPromotionStorage(FakeMediaStorage):
+        def promote_object(
+            self,
+            *,
+            source_key: str,
+            destination_key: str,
+            content_type: str,
+            original_name: str,
+        ) -> None:
+            super().promote_object(
+                source_key=source_key,
+                destination_key=destination_key,
+                content_type=content_type,
+                original_name=original_name,
+            )
+            discard_media_upload(
+                upload_id=initiated.upload_id,
+                uploader=participant_pair.first,
+                storage=self,
+            )
+
+    racing_storage = DiscardDuringPromotionStorage(stored_object=storage.stored_object)
+
+    with pytest.raises(MediaUploadNotFoundError, match="업로드를 찾을 수 없어요"):
+        complete_media_upload(
+            upload_id=initiated.upload_id,
+            uploader=participant_pair.first,
+            storage=racing_storage,
+        )
+
+    final_key = racing_storage.promotion_requests[0][1]
+    assert not MediaAttachment.objects.filter(pk=initiated.upload_id).exists()
+    assert racing_storage.deletion_requests == [
+        f"pending/{initiated.upload_id}",
+        final_key,
+        final_key,
+    ]
 
 
 def test_completion_revalidates_the_copied_object_to_close_put_race(
