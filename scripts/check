@@ -67,9 +67,9 @@ fi
 
 if [[ "$mode" == "all" || "$mode" == "typecheck" ]]; then
     run_step "Run Pyrefly type checks" uv run --no-sync pyrefly check
-    run_step "Run strict Pyrefly checks for core logic" \
+    run_step "Run strict Pyrefly checks for core logic and API boundary" \
         uv run --no-sync pyrefly check --preset strict \
-        apps/ratings/score_rules.py apps/ratings/services
+        apps/ratings/score_rules.py apps/ratings/services apps/ratings/api
 fi
 
 if [[ "$mode" == "typecheck" ]]; then
@@ -97,6 +97,15 @@ test_environment=(
     "SECURE_SSL_REDIRECT=0"
     "SECRET_KEY=harness-test-only"
 )
+
+harness_temp_parent="${TMPDIR:-/tmp}"
+harness_temp_dir="$(mktemp -d "$harness_temp_parent/friendly-rating-check.XXXXXX")"
+cleanup() {
+    if [[ -n "${harness_temp_dir:-}" && -d "$harness_temp_dir" ]]; then
+        rm -rf -- "$harness_temp_dir"
+    fi
+}
+trap cleanup EXIT
 
 if [[ "$mode" == "all" ]]; then
     run_step "Run Django system checks" \
@@ -135,6 +144,10 @@ if [[ "$mode" == "all" ]]; then
     run_step "Check for missing migrations" \
         env "${test_environment[@]}" \
         uv run --no-sync python manage.py makemigrations --check --dry-run
+    run_step "Generate and validate OpenAPI schema" \
+        env "${test_environment[@]}" \
+        uv run --no-sync python manage.py spectacular \
+        --validate --fail-on-warn --file "$harness_temp_dir/openapi.yaml"
 fi
 
 if [[ ${#test_arguments[@]} -eq 0 ]]; then
@@ -170,15 +183,6 @@ production_environment=(
 run_step "Run production deployment checks" \
     env "${production_environment[@]}" \
     uv run --no-sync python manage.py check --deploy --fail-level WARNING
-
-harness_temp_parent="${TMPDIR:-/tmp}"
-harness_temp_dir="$(mktemp -d "$harness_temp_parent/friendly-rating-check.XXXXXX")"
-cleanup() {
-    if [[ -n "${harness_temp_dir:-}" && -d "$harness_temp_dir" ]]; then
-        rm -rf -- "$harness_temp_dir"
-    fi
-}
-trap cleanup EXIT
 
 run_step "Collect production static files" \
     env "${production_environment[@]}" \

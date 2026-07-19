@@ -58,10 +58,12 @@
   문자열 경로를 단언한다.
 - mutation endpoint는 성공뿐 아니라 비로그인, 잘못된 method/입력, 경계값과
   실패 시 무쓰기를 검증한다.
-- 향후 DRF API가 추가되면 same-origin session 인증, 참가자 권한, CSRF, content type과
+- DRF API는 same-origin session 인증, 참가자 권한, CSRF, content type과
   parser 실패를 공개 URL에서 검증한다. 성공과 오류 응답은 `resultType`에 맞춰
   `error`와 `success`가 배타적이고 HTTP 상태 코드가 유지되는지 확인한다.
-- 향후 목록 API는 모든 형태가 `success.results`를 사용하고 page/cursor metadata가
+- API mutation은 렌더링된 실제 CSRF token과 `Origin`을 사용하는 테스트를 포함하고,
+  비로그인·CSRF 실패·비참가자·잘못된 입력에서 DB가 바뀌지 않는지 확인한다.
+- 목록 API는 모든 형태가 `success.results`를 사용하고 page/cursor metadata가
   선언한 schema와 일치하는지 검증한다. OpenAPI 생성 검사는 runtime envelope,
   camelCase field, required/nullable 조건과 오류 component의 드리프트를 실패로 만든다.
 - DB constraint는 `full_clean()`만으로 대신하지 말고 실제 저장 시 DB가 보장하는지
