@@ -6,10 +6,9 @@ from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from firebase_admin import messaging
 
-from ratings.models import PushDevice
-from ratings.notifications import _get_firebase_app, send_score_change_notification
-from ratings.services import change_relationship_score
-
+from ..models import PushDevice
+from ..notifications import _get_firebase_app, send_score_change_notification
+from ..services import change_relationship_score
 from .factories import create_participant_pair
 
 VALID_FID = "c12345678901234567890A"
@@ -142,8 +141,8 @@ class PushDeliveryTests(TestCase):
     def setUp(self):
         self.first, self.second, self.score, _ = create_participant_pair()
 
-    @patch("ratings.notifications.messaging.send_each_for_multicast")
-    @patch("ratings.notifications._get_firebase_app")
+    @patch("apps.ratings.notifications.messaging.send_each_for_multicast")
+    @patch("apps.ratings.notifications._get_firebase_app")
     def test_sends_private_notification_to_all_recipient_devices(
         self,
         get_firebase_app,
@@ -181,8 +180,8 @@ class PushDeliveryTests(TestCase):
             TEST_PUBLIC_BASE_URL,
         )
 
-    @patch("ratings.notifications.messaging.send_each_for_multicast")
-    @patch("ratings.notifications._get_firebase_app")
+    @patch("apps.ratings.notifications.messaging.send_each_for_multicast")
+    @patch("apps.ratings.notifications._get_firebase_app")
     def test_permanently_invalid_fid_is_deactivated(
         self,
         get_firebase_app,
@@ -208,7 +207,7 @@ class PushDeliveryTests(TestCase):
         device.refresh_from_db()
         self.assertFalse(device.is_active)
 
-    @patch("ratings.services.send_score_change_notification")
+    @patch("apps.ratings.services.score_changes.send_score_change_notification")
     def test_score_change_notifies_recipient_only_after_commit(self, send_push):
         with self.captureOnCommitCallbacks(execute=False) as callbacks:
             change_relationship_score(source_participant=self.first, delta=1)
@@ -219,11 +218,11 @@ class PushDeliveryTests(TestCase):
         send_push.assert_called_once_with(recipient_id=self.second.pk)
 
     @patch(
-        "ratings.services.send_score_change_notification",
+        "apps.ratings.services.score_changes.send_score_change_notification",
         side_effect=RuntimeError("FCM unavailable"),
     )
     def test_push_failure_does_not_undo_score_change(self, _send_push):
-        with self.assertLogs("ratings.services", level="ERROR"):
+        with self.assertLogs("apps.ratings.services.score_changes", level="ERROR"):
             with self.captureOnCommitCallbacks(execute=True):
                 change_relationship_score(source_participant=self.first, delta=3)
 
@@ -268,7 +267,7 @@ class FirebaseConfigurationTests(TestCase):
         FIREBASE_SERVICE_ACCOUNT_JSON=json.dumps({"project_id": "different-project"}),
     )
     def test_mismatched_service_account_project_is_rejected(self):
-        with self.assertLogs("ratings.notifications", level="ERROR"):
+        with self.assertLogs("apps.ratings.notifications", level="ERROR"):
             firebase_app = _get_firebase_app()
 
         self.assertIsNone(firebase_app)

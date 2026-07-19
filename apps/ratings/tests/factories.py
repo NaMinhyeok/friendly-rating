@@ -1,6 +1,6 @@
 from django.contrib.auth import get_user_model
 
-from ratings.models import Participant, RelationshipScore
+from ..models import Participant, RelationshipScore
 
 
 def create_participant_pair():

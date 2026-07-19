@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from ratings.participant_provisioning import (
+from ...participant_provisioning import (
     ProvisioningError,
     ProvisioningMode,
     ProvisioningOutcome,

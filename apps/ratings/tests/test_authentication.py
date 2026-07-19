@@ -7,8 +7,8 @@ from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from ratings.models import Participant
-from ratings.security import get_client_ip_address
+from ..models import Participant
+from ..security import get_client_ip_address
 
 PARTICIPANT_ENV = {
     "PARTICIPANT_1_NAME": "민수",

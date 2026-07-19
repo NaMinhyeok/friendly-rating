@@ -146,7 +146,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "axes",
-    "ratings",
+    "apps.ratings.apps.RatingsConfig",
 ]
 
 MIDDLEWARE = [
@@ -173,8 +173,8 @@ AXES_COOLOFF_TIME = timedelta(minutes=15)
 AXES_RESET_ON_SUCCESS = True
 AXES_RESET_COOL_OFF_ON_FAILURE_DURING_LOCKOUT = False
 AXES_PASSWORD_FORM_FIELD = "pin"
-AXES_CLIENT_IP_CALLABLE = "ratings.security.get_client_ip_address"
-AXES_LOCKOUT_CALLABLE = "ratings.views.login_lockout"
+AXES_CLIENT_IP_CALLABLE = "apps.ratings.security.get_client_ip_address"
+AXES_LOCKOUT_CALLABLE = "apps.ratings.views.login_lockout"
 AXES_HTTP_RESPONSE_CODE = 429
 AXES_COOLOFF_MESSAGE = "로그인 시도가 너무 많습니다. 15분 후 다시 시도해 주세요."
 AXES_DISABLE_ACCESS_LOG = True

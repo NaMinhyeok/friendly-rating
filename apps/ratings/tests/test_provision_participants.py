@@ -10,8 +10,8 @@ from django.db import connection
 from django.test import SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
 
-from ratings.models import Participant, PushDevice, RelationshipScore, ScoreChange
-from ratings.participant_provisioning import (
+from ..models import Participant, PushDevice, RelationshipScore, ScoreChange
+from ..participant_provisioning import (
     ProvisioningError,
     load_specs_from_environment,
 )

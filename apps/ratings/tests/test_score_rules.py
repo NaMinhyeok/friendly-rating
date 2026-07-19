@@ -1,7 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.test import SimpleTestCase
 
-from ratings.score_rules import calculate_resulting_score, prepare_score_change
+from ..score_rules import calculate_resulting_score, prepare_score_change
 
 
 class ScoreChangeRulesTests(SimpleTestCase):

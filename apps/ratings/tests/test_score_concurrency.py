@@ -6,9 +6,8 @@ from django.db import close_old_connections, connection, connections
 from django.test import TransactionTestCase, skipUnlessDBFeature
 from django.test.utils import CaptureQueriesContext
 
-from ratings.models import Participant, ScoreChange
-from ratings.services import change_relationship_score
-
+from ..models import Participant, ScoreChange
+from ..services import change_relationship_score
 from .factories import create_participant_pair
 
 
@@ -36,7 +35,7 @@ class ConcurrentScoreChangeTests(TransactionTestCase):
                 connections["default"].close()
 
         with (
-            patch("ratings.services.send_score_change_notification"),
+            patch("apps.ratings.services.score_changes.send_score_change_notification"),
             ThreadPoolExecutor(max_workers=2) as executor,
         ):
             futures = [executor.submit(change_score) for _ in range(2)]
