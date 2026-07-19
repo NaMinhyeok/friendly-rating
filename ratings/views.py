@@ -17,6 +17,7 @@ from django.utils.http import url_has_allowed_host_and_scheme
 from django.views.decorators.http import require_GET, require_POST
 
 from .forms import PinLoginForm, ScoreChangeForm
+from .health import database_is_ready
 from .models import Participant, PushDevice, RelationshipScore, ScoreChange
 from .services import change_relationship_score
 
@@ -274,5 +275,16 @@ def service_worker(request):
     return response
 
 
+@require_GET
 def health(request):
-    return HttpResponse("ok", content_type="text/plain")
+    if database_is_ready():
+        response = HttpResponse("ok", content_type="text/plain")
+    else:
+        response = HttpResponse(
+            "unavailable",
+            content_type="text/plain",
+            status=503,
+        )
+
+    response.headers["Cache-Control"] = "no-store"
+    return response
