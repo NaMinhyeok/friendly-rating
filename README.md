@@ -77,7 +77,7 @@ uv run --env-file .env python manage.py cleanup_media_uploads --check
 uv run --env-file .env python manage.py cleanup_media_uploads --limit 100
 ```
 
-Railway의 별도 `media-cleanup` Cron 서비스는 `/railway.cron.toml`을 사용하며, 매일
+Railway의 별도 `media-cleanup` Cron 서비스는 `/railway.cron.json`을 사용하며, 매일
 `0 18 * * *`(UTC, 한국 시간 03:00)에 실행됩니다. 환경 변수가 런타임에 이미
 주입되므로 `.env`를 참조하지 않고 다음 명령을 사용합니다.
 

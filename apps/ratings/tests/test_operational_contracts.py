@@ -23,8 +23,8 @@ def _railway_config():
 
 
 def _railway_cron_config():
-    config_path = Path(django_settings.BASE_DIR) / "railway.cron.toml"
-    return tomllib.loads(config_path.read_text())
+    config_path = Path(django_settings.BASE_DIR) / "railway.cron.json"
+    return json.loads(config_path.read_text())
 
 
 def _load_settings_with_railway_marker(marker_name: str) -> dict[str, object]:
@@ -163,10 +163,14 @@ def test_railway_media_cleanup_cron_is_a_daily_one_shot_without_migrations():
     config = _railway_cron_config()
 
     assert config == {
+        "$schema": "https://railway.com/railway.schema.json",
         "build": {"builder": "RAILPACK"},
         "deploy": {
             "cronSchedule": "0 18 * * *",
+            "healthcheckPath": None,
+            "healthcheckTimeout": None,
             "preDeployCommand": [],
+            "restartPolicyMaxRetries": None,
             "restartPolicyType": "NEVER",
             "startCommand": "python manage.py cleanup_media_uploads --limit 100",
         },
