@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repository_root"
+
+usage() {
+    cat <<'EOF'
+Usage:
+  ./scripts/check
+  ./scripts/check lint
+  ./scripts/check test [--] [pytest arguments...]
+EOF
+}
+
+mode="${1:-all}"
+if [[ $# -gt 0 ]]; then
+    shift
+fi
+
+case "$mode" in
+    all | lint | test) ;;
+    -h | --help)
+        usage
+        exit 0
+        ;;
+    *)
+        usage >&2
+        exit 2
+        ;;
+esac
+
+if [[ "$mode" == "test" ]]; then
+    if [[ "${1:-}" == "--" ]]; then
+        shift
+    fi
+    test_arguments=("$@")
+elif [[ $# -gt 0 ]]; then
+    usage >&2
+    exit 2
+else
+    test_arguments=()
+fi
+
+run_step() {
+    local label="$1"
+    shift
+    printf "\n==> %s\n" "$label"
+    "$@"
+}
+
+if [[ "$mode" == "all" ]]; then
+    run_step "Verify dependency lock" uv lock --check
+fi
+
+if [[ "$mode" == "all" || "$mode" == "lint" ]]; then
+    run_step "Run Ruff lint" uv run --no-sync ruff check .
+    run_step "Check Ruff formatting" uv run --no-sync ruff format --check .
+fi
+
+if [[ "$mode" == "lint" ]]; then
+    printf "\nRequested repository checks passed.\n"
+    exit 0
+fi
+
+test_database_url="${HARNESS_DATABASE_URL:-sqlite:///:memory:}"
+
+test_environment=(
+    "ALLOWED_HOSTS=localhost,127.0.0.1,[::1],testserver"
+    "CSRF_TRUSTED_ORIGINS="
+    "DATABASE_URL=$test_database_url"
+    "DEBUG=1"
+    "DJANGO_SETTINGS_MODULE=config.settings"
+    "FIREBASE_SERVICE_ACCOUNT_JSON="
+    "FIREBASE_VAPID_PUBLIC_KEY="
+    "FIREBASE_WEB_CONFIG_JSON={}"
+    "PUSH_NOTIFICATIONS_ENABLED=0"
+    "PUBLIC_BASE_URL="
+    "PYTEST_ADDOPTS="
+    "RAILWAY_ENVIRONMENT="
+    "RAILWAY_PUBLIC_DOMAIN="
+    "SECURE_HSTS_SECONDS=0"
+    "SECURE_SSL_REDIRECT=0"
+    "SECRET_KEY=harness-test-only"
+)
+
+if [[ "$mode" == "all" ]]; then
+    run_step "Run Django system checks" \
+        env "${test_environment[@]}" \
+        uv run --no-sync python manage.py check
+fi
+
+check_migration_history() {
+    local comparison_ref="${HARNESS_MIGRATION_BASE:-HEAD}"
+    local comparison_commit
+    local changed_migrations
+
+    if [[ "$comparison_ref" =~ ^0+$ ]]; then
+        return
+    fi
+    if ! comparison_commit="$(
+        git rev-parse --verify "$comparison_ref^{commit}" 2>/dev/null
+    )"; then
+        printf "Unable to resolve migration comparison ref: %s\n" "$comparison_ref" >&2
+        return 1
+    fi
+
+    changed_migrations="$(
+        git diff --name-status --diff-filter=MDRT \
+            "$comparison_commit" -- apps/ratings/migrations
+    )"
+    if [[ -n "$changed_migrations" ]]; then
+        printf "%s\n" "$changed_migrations" >&2
+        printf "Existing migration files are append-only; add a new migration instead.\n" >&2
+        return 1
+    fi
+}
+
+if [[ "$mode" == "all" ]]; then
+    run_step "Check migration history is append-only" check_migration_history
+    run_step "Check for missing migrations" \
+        env "${test_environment[@]}" \
+        uv run --no-sync python manage.py makemigrations --check --dry-run
+fi
+
+if [[ ${#test_arguments[@]} -eq 0 ]]; then
+    test_arguments=(-q)
+fi
+run_step "Run test suite" \
+    env "${test_environment[@]}" \
+    uv run --no-sync pytest "${test_arguments[@]}"
+
+if [[ "$mode" == "test" ]]; then
+    printf "\nRequested repository checks passed.\n"
+    exit 0
+fi
+
+production_environment=(
+    "ALLOWED_HOSTS="
+    "CSRF_TRUSTED_ORIGINS="
+    "DEBUG=0"
+    "DATABASE_URL=$test_database_url"
+    "DJANGO_SETTINGS_MODULE=config.ci_production_settings"
+    "FIREBASE_SERVICE_ACCOUNT_JSON="
+    "FIREBASE_VAPID_PUBLIC_KEY="
+    "FIREBASE_WEB_CONFIG_JSON={}"
+    "PUSH_NOTIFICATIONS_ENABLED=0"
+    "PUBLIC_BASE_URL=https://harness.example.invalid/"
+    "RAILWAY_ENVIRONMENT=harness-check"
+    "RAILWAY_PUBLIC_DOMAIN=harness.example.invalid"
+    "SECURE_HSTS_SECONDS=3600"
+    "SECURE_SSL_REDIRECT=1"
+    "SECRET_KEY=harness-check-only-000000000000000000000000000000000000000000000000000000"
+)
+
+run_step "Run production deployment checks" \
+    env "${production_environment[@]}" \
+    uv run --no-sync python manage.py check --deploy --fail-level WARNING
+
+harness_temp_parent="${TMPDIR:-/tmp}"
+harness_temp_dir="$(mktemp -d "$harness_temp_parent/friendly-rating-check.XXXXXX")"
+cleanup() {
+    if [[ -n "${harness_temp_dir:-}" && -d "$harness_temp_dir" ]]; then
+        rm -rf -- "$harness_temp_dir"
+    fi
+}
+trap cleanup EXIT
+
+run_step "Collect production static files" \
+    env "${production_environment[@]}" \
+    "HARNESS_STATIC_ROOT=$harness_temp_dir/staticfiles" \
+    uv run --no-sync python manage.py collectstatic --noinput --verbosity 0
+
+printf "\nAll repository checks passed.\n"

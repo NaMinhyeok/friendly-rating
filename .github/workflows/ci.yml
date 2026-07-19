@@ -21,7 +21,8 @@ jobs:
       DEBUG: "1"
       SECRET_KEY: django-insecure-ci-only
       PUSH_NOTIFICATIONS_ENABLED: "0"
-      DATABASE_URL: postgresql://friendly_rating:friendly_rating@127.0.0.1:5432/friendly_rating
+      HARNESS_DATABASE_URL: postgresql://friendly_rating:friendly_rating@127.0.0.1:5432/friendly_rating
+      HARNESS_MIGRATION_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
 
     services:
       postgres:
@@ -42,6 +43,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python
@@ -55,42 +57,8 @@ jobs:
           version: "0.11.29"
           enable-cache: true
 
-      - name: Verify dependency lock
-        run: uv lock --check
-
       - name: Install dependencies
         run: uv sync --locked
 
-      - name: Run Ruff lint
-        run: uv run --no-sync ruff check .
-
-      - name: Check Ruff formatting
-        run: uv run --no-sync ruff format --check .
-
-      - name: Run Django checks
-        run: uv run --no-sync python manage.py check
-
-      - name: Run production deployment checks
-        env:
-          DEBUG: "0"
-          RAILWAY_ENVIRONMENT: ci
-          RAILWAY_PUBLIC_DOMAIN: ci.example.invalid
-          SECRET_KEY: ci-only-not-a-secret-000000000000000000000000000000000000000000000000000000
-          DJANGO_SETTINGS_MODULE: config.ci_production_settings
-        run: >-
-          uv run --no-sync python manage.py check
-          --deploy --fail-level WARNING
-
-      - name: Collect production static files
-        env:
-          DEBUG: "0"
-          RAILWAY_ENVIRONMENT: ci
-          RAILWAY_PUBLIC_DOMAIN: ci.example.invalid
-          SECRET_KEY: ci-only-not-a-secret-000000000000000000000000000000000000000000000000000000
-        run: uv run --no-sync python manage.py collectstatic --noinput
-
-      - name: Check for missing migrations
-        run: uv run --no-sync python manage.py makemigrations --check --dry-run
-
-      - name: Run tests
-        run: uv run --no-sync pytest
+      - name: Run repository checks
+        run: make check
