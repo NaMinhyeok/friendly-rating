@@ -1,0 +1,7 @@
+[build]
+builder = "RAILPACK"
+
+[deploy]
+startCommand = "python manage.py cleanup_media_uploads --limit 100"
+cronSchedule = "0 18 * * *"
+restartPolicyType = "NEVER"

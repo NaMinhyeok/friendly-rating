@@ -77,8 +77,14 @@ uv run --env-file .env python manage.py cleanup_media_uploads --check
 uv run --env-file .env python manage.py cleanup_media_uploads --limit 100
 ```
 
-Railway의 별도 일일 Cron 서비스에서는 환경 변수가 런타임에 이미 주입되므로 `.env`를
-참조하지 않고 다음 명령을 사용합니다.
+Railway의 별도 `media-cleanup` Cron 서비스는 `/railway.cron.toml`을 사용하며, 매일
+`0 18 * * *`(UTC, 한국 시간 03:00)에 실행됩니다. 환경 변수가 런타임에 이미
+주입되므로 `.env`를 참조하지 않고 다음 명령을 사용합니다.
+
+서비스 변수는 운영 비밀을 복사하지 않고 Railway reference로 연결합니다.
+`DATABASE_URL`은 `${{Postgres.DATABASE_URL}}`을, `SECRET_KEY`,
+`MEDIA_UPLOADS_ENABLED`, 모든 `R2_*`와 미디어 URL TTL 변수는 각각 같은 이름의
+`${{web.<변수명>}}` 값을 참조합니다.
 
 ```bash
 python manage.py cleanup_media_uploads --limit 100
