@@ -34,6 +34,7 @@ class ExpiredMediaCleanupResult:
 @dataclass(frozen=True, slots=True)
 class _ExpiredMediaCleanupClaim:
     upload_id: UUID
+    expires_at: datetime
     object_keys: tuple[str, ...]
 
 
@@ -73,23 +74,27 @@ def _claim_expired_media_cleanup(
         attachment.status = MediaAttachment.Status.DELETING
         attachment.save(update_fields=("status",))
 
-    object_keys = [attachment.object_key]
+    # Completion only deletes the reusable staging object on a best-effort
+    # basis, so every retry must retain its canonical key independently of the
+    # immutable object key stored on a READY or DELETING attachment.
+    object_keys = [f"pending/{attachment.pk}", attachment.object_key]
     if attachment.finalization_token is not None:
         token_key = f"media/{attachment.pk}/{attachment.finalization_token}"
-        if token_key != attachment.object_key:
-            object_keys.append(token_key)
+        object_keys.append(token_key)
     return _ExpiredMediaCleanupClaim(
         upload_id=attachment.pk,
-        object_keys=tuple(object_keys),
+        expires_at=attachment.expires_at,
+        object_keys=tuple(dict.fromkeys(object_keys)),
     )
 
 
 @transaction.atomic(durable=True)
-def _finish_expired_media_cleanup(*, upload_id: UUID) -> bool:
+def _finish_expired_media_cleanup(*, claim: _ExpiredMediaCleanupClaim) -> bool:
     try:
         attachment = MediaAttachment.objects.select_for_update().get(
-            pk=upload_id,
+            pk=claim.upload_id,
             status=MediaAttachment.Status.DELETING,
+            expires_at=claim.expires_at,
         )
     except MediaAttachment.DoesNotExist:
         return False
@@ -139,7 +144,7 @@ def cleanup_expired_media_uploads(
                 continue
             for object_key in claim.object_keys:
                 storage_gateway.delete_object(object_key=object_key)
-            if _finish_expired_media_cleanup(upload_id=claim.upload_id):
+            if _finish_expired_media_cleanup(claim=claim):
                 deleted += 1
         except Exception:
             failed += 1

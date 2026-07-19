@@ -8,6 +8,7 @@ const MAX_IMAGE_SIZE = 10 * 1024 * 1024;
 const MAX_VIDEO_SIZE = 100 * 1024 * 1024;
 const IMAGE_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const VIDEO_CONTENT_TYPES = ["video/mp4", "video/webm", "video/quicktime"];
+let diaryAuthenticationRedirectStarted = false;
 
 if (diaryRoot) {
   initializeDiary(diaryRoot);
@@ -29,7 +30,9 @@ function initializeDiary(root) {
     content: createForm?.querySelector('[data-diary-error-for="content"]'),
   };
   const createMedia = createDiaryMediaController({
+    csrfToken: getCsrfToken(createForm),
     input: createForm?.querySelector("[data-diary-media-input]"),
+    purpose: "diaryEntry",
     selection: createForm?.querySelector("[data-diary-media-selection]"),
     status: createForm?.querySelector("[data-diary-media-status]"),
     uploadsUrl: root.dataset.mediaUploadsUrl,
@@ -137,7 +140,7 @@ function initializeDiary(root) {
         });
         readDiaryEntry(payload?.success);
         contentInput.value = "";
-        createMedia?.clear();
+        createMedia?.clear({ discardUploads: false });
         updateCharacterCount(contentInput, characterCount);
         showFormStatus(createStatus, "일기를 남겼어요.", "success");
         showDiaryToast("우리 일기에 새 이야기를 남겼어요.", "success");
@@ -304,9 +307,26 @@ class MediaUploadError extends Error {
   }
 }
 
+class MediaUploadCancelledError extends Error {
+  constructor() {
+    super("파일 업로드가 취소되었습니다.");
+    this.name = "MediaUploadCancelledError";
+  }
+}
+
+class DirectPutResponseError extends Error {
+  constructor(status) {
+    super("파일 저장소가 업로드를 거부했습니다.");
+    this.name = "DirectPutResponseError";
+    this.status = status;
+  }
+}
+
 function createDiaryMediaController({
+  csrfToken,
   existingAttachments = [],
   input,
+  purpose,
   selection,
   status,
   uploadsUrl,
@@ -320,15 +340,16 @@ function createDiaryMediaController({
   let items = [];
   let isDisabled = true;
   let hasChanges = false;
+  const backgroundUploadContext = {
+    csrfToken,
+    purpose,
+    uploadsUrl,
+  };
 
   const setStatus = (message, state = "") => {
     status.textContent = message;
     status.classList.toggle("media-status--error", state === "error");
     status.classList.toggle("media-status--success", state === "success");
-  };
-
-  const revokeNewPreviews = () => {
-    items.forEach((item) => revokePreviewUrl(item.previewUrl));
   };
 
   const currentSelection = () => [
@@ -349,6 +370,116 @@ function createDiaryMediaController({
       : `사진 ${selected.length}장을 선택했어요.`;
   };
 
+  const updateSelectionStatus = () => {
+    if (items.some((item) => item.uploadState === "uploading")) {
+      setStatus("첨부 파일을 올리고 있어요…");
+      return;
+    }
+    if (items.some((item) => item.uploadState === "failed")) {
+      setStatus(
+        "첨부 파일을 업로드하지 못했어요. 일기를 저장할 때 다시 시도해 주세요.",
+        "error",
+      );
+      return;
+    }
+    if (items.length > 0 && items.every((item) => item.uploadId)) {
+      setStatus("첨부 파일 업로드를 마쳤어요.", "success");
+      return;
+    }
+    setStatus(selectionMessage());
+  };
+
+  const uploadFailureMessage = (error) => {
+    const apiError = error instanceof ApiRequestError ? error : null;
+    return apiError?.apiError?.errorCode === "CSRF_FAILED"
+      ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
+      : apiError?.apiError?.reason ||
+          "첨부 파일을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+  };
+
+  const startItemUpload = (item, context) => {
+    if (item.isDiscarded) {
+      return Promise.reject(new MediaUploadCancelledError());
+    }
+    if (item.uploadPromise && !item.needsFreshIntent) {
+      return item.uploadPromise;
+    }
+    if (item.uploadId && !item.needsFreshIntent) {
+      updateUploadProgress(item, 100, "업로드 완료");
+      return Promise.resolve(item.uploadId);
+    }
+
+    item.uploadContext = context;
+    item.uploadState = "uploading";
+    updateSelectionStatus();
+    const uploadPromise = ensureMediaUploaded(item, context)
+      .then((uploadId) => {
+        item.uploadState = "uploaded";
+        return uploadId;
+      })
+      .catch((error) => {
+        if (!item.isDiscarded && !(error instanceof MediaUploadCancelledError)) {
+          if (uploadIntentCannotBeRetried(error)) {
+            item.needsFreshIntent = true;
+          }
+          markUploadFailed(item);
+        }
+        if (item.uploadPromise === uploadPromise) {
+          item.uploadPromise = null;
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (items.includes(item)) {
+          updateSelectionStatus();
+        }
+      });
+    item.uploadPromise = uploadPromise;
+    uploadPromise.catch(() => undefined);
+    return uploadPromise;
+  };
+
+  const startBackgroundUpload = (item) => {
+    startItemUpload(item, backgroundUploadContext).catch((error) => {
+      if (!items.includes(item) || error instanceof MediaUploadCancelledError) {
+        return;
+      }
+      if (redirectWhenAuthenticationExpired(error)) {
+        return;
+      }
+      setStatus(uploadFailureMessage(error), "error");
+    });
+  };
+
+  const abandonItem = (item) => {
+    item.isDiscarded = true;
+    item.uploadState = "cancelled";
+    item.uploadAbortController?.abort();
+    const context = item.uploadContext || backgroundUploadContext;
+    if (item.intent || item.uploadId) {
+      discardDiaryMediaUpload(item, context).catch((error) => {
+        redirectWhenAuthenticationExpired(error);
+      });
+    }
+  };
+
+  const clear = ({ discardUploads = true } = {}) => {
+    const clearedItems = items;
+    items = [];
+    clearedItems.forEach((item) => {
+      revokePreviewUrl(item.previewUrl);
+      if (discardUploads) {
+        abandonItem(item);
+      }
+    });
+    retainedAttachments = [];
+    hasChanges = false;
+    input.value = "";
+    selection.replaceChildren();
+    selection.hidden = true;
+    setStatus("");
+  };
+
   const render = () => {
     retainedRemoveButtons = [];
     const retainedPreviews = retainedAttachments.map((attachment) => {
@@ -362,8 +493,8 @@ function createDiaryMediaController({
             (candidate) => candidate.id !== attachment.id,
           );
           hasChanges = true;
-          setStatus(selectionMessage());
           render();
+          updateSelectionStatus();
         },
       });
       retainedRemoveButtons.push(preview.removeButton);
@@ -377,9 +508,10 @@ function createDiaryMediaController({
           }
           revokePreviewUrl(item.previewUrl);
           items = items.filter((candidate) => candidate !== item);
+          abandonItem(item);
           hasChanges = true;
-          setStatus(selectionMessage());
           render();
+          updateSelectionStatus();
         },
         removeLabel: `${item.file.name} 삭제`,
       });
@@ -404,29 +536,18 @@ function createDiaryMediaController({
       setStatus(error, "error");
       return;
     }
-    items.push(...files.map(createUploadItem));
+    const newItems = files.map(createUploadItem);
+    items.push(...newItems);
     hasChanges = true;
-    setStatus(selectionMessage());
     render();
+    newItems.forEach(startBackgroundUpload);
   });
 
   render();
 
   return {
-    clear() {
-      revokeNewPreviews();
-      retainedAttachments = [];
-      items = [];
-      hasChanges = false;
-      input.value = "";
-      selection.replaceChildren();
-      selection.hidden = true;
-      setStatus("");
-    },
-    destroy() {
-      revokeNewPreviews();
-      items = [];
-    },
+    clear,
+    destroy: clear,
     hasChanges() {
       return hasChanges;
     },
@@ -434,7 +555,11 @@ function createDiaryMediaController({
       return items.length > 0;
     },
     resetUploads() {
-      items.forEach(resetUploadState);
+      items.forEach((item) => {
+        item.uploadPromise = null;
+        item.needsFreshIntent = Boolean(item.intent || item.uploadId);
+        markUploadFailed(item);
+      });
       if (items.length > 0) {
         setStatus("첨부 파일을 다시 업로드해 주세요.", "error");
       }
@@ -452,36 +577,26 @@ function createDiaryMediaController({
       });
     },
     async upload({ csrfToken, purpose }) {
+      const selectedItems = [...items];
       try {
-        const uploadIds = retainedAttachments.map((attachment) => attachment.id);
-        for (let index = 0; index < items.length; index += 1) {
-          const item = items[index];
-          setStatus(`${index + 1}/${items.length} 파일을 올리고 있어요…`);
-          uploadIds.push(
-            await ensureMediaUploaded(item, {
+        const uploadedIds = await Promise.all(
+          selectedItems.map((item) =>
+            startItemUpload(item, {
               csrfToken,
               purpose,
               uploadsUrl,
             }),
-          );
-        }
-        setStatus("첨부 파일 업로드를 마쳤어요.", "success");
-        return uploadIds;
+          ),
+        );
+        updateSelectionStatus();
+        return [
+          ...retainedAttachments.map((attachment) => attachment.id),
+          ...uploadedIds.filter((_, index) =>
+            items.includes(selectedItems[index]),
+          ),
+        ];
       } catch (error) {
-        const failedItem = items.find((item) => !item.uploadId);
-        if (failedItem) {
-          if (uploadIntentCannotBeRetried(error)) {
-            resetUploadState(failedItem);
-          } else {
-            markUploadFailed(failedItem);
-          }
-        }
-        const apiError = error instanceof ApiRequestError ? error : null;
-        const message =
-          apiError?.apiError?.errorCode === "CSRF_FAILED"
-            ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
-            : apiError?.apiError?.reason ||
-              "첨부 파일을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+        const message = uploadFailureMessage(error);
         setStatus(message, "error");
         throw new MediaUploadError(message, error);
       }
@@ -533,14 +648,24 @@ function mediaByteSize(value) {
 
 function createUploadItem(file) {
   return {
+    discardPromise: null,
+    discardedUploadId: null,
     file,
     intent: null,
+    isDiscarded: false,
     isPutComplete: false,
+    needsFreshIntent: false,
     previewUrl: createPreviewUrl(file),
     progress: null,
     progressStatus: null,
     removeButton: null,
+    uploadAbortController: null,
+    uploadContext: null,
     uploadId: null,
+    uploadProgressLabel: "업로드 전",
+    uploadProgressValue: 0,
+    uploadPromise: null,
+    uploadState: "pending",
   };
 }
 
@@ -574,15 +699,11 @@ function createUploadPreview(item, { onRemove, removeLabel }) {
   const progress = document.createElement("progress");
   progress.className = "media-upload-progress";
   progress.max = 100;
-  progress.value = item.uploadId ? 100 : item.isPutComplete ? 95 : 0;
+  progress.value = item.uploadProgressValue;
   progress.setAttribute("aria-label", `${item.file.name} 업로드 진행률`);
   const progressStatus = document.createElement("span");
   progressStatus.className = "media-upload-progress__label";
-  progressStatus.textContent = item.uploadId
-    ? "업로드 완료"
-    : item.isPutComplete
-      ? "업로드 확인 대기"
-      : "업로드 전";
+  progressStatus.textContent = item.uploadProgressLabel;
   details.append(name, size, progress, progressStatus);
 
   const removeButton = document.createElement("button");
@@ -622,7 +743,11 @@ function createExistingAttachmentPreview(attachment, { disabled, onRemove }) {
 }
 
 async function ensureMediaUploaded(item, { csrfToken, purpose, uploadsUrl }) {
-  if (item.uploadId) {
+  const discardContext = { csrfToken, uploadsUrl };
+  if (item.isDiscarded) {
+    throw new MediaUploadCancelledError();
+  }
+  if (item.uploadId && !item.needsFreshIntent) {
     updateUploadProgress(item, 100, "업로드 완료");
     return item.uploadId;
   }
@@ -632,6 +757,16 @@ async function ensureMediaUploaded(item, { csrfToken, purpose, uploadsUrl }) {
     !item.isPutComplete &&
     Date.parse(item.intent.expiresAt) <= Date.now()
   ) {
+    item.needsFreshIntent = true;
+  }
+
+  if (item.needsFreshIntent) {
+    if (item.intent || item.uploadId) {
+      await discardDiaryMediaUpload(item, discardContext);
+    }
+    if (item.isDiscarded) {
+      throw new MediaUploadCancelledError();
+    }
     resetUploadState(item);
   }
 
@@ -653,35 +788,65 @@ async function ensureMediaUploaded(item, { csrfToken, purpose, uploadsUrl }) {
       method: "POST",
     });
     item.intent = readUploadIntent(intentPayload);
+    await stopIfDiaryMediaUploadDiscarded(item, discardContext);
   }
 
   const intent = item.intent;
   if (!item.isPutComplete) {
     updateUploadProgress(item, 5, "파일을 올리고 있어요…");
-    await putFileWithProgress(intent, item.file, (percentage) => {
-      updateUploadProgress(
-        item,
-        Math.max(5, Math.min(92, percentage)),
-        "파일을 올리고 있어요…",
+    const uploadAbortController =
+      typeof AbortController === "function" ? new AbortController() : null;
+    item.uploadAbortController = uploadAbortController;
+    try {
+      await putFileWithProgress(
+        intent,
+        item.file,
+        (percentage) => {
+          updateUploadProgress(
+            item,
+            Math.max(5, Math.min(92, percentage)),
+            "파일을 올리고 있어요…",
+          );
+        },
+        { signal: uploadAbortController?.signal },
       );
-    });
+    } catch (error) {
+      if (item.isDiscarded) {
+        await stopIfDiaryMediaUploadDiscarded(item, discardContext);
+      }
+      throw error;
+    } finally {
+      if (item.uploadAbortController === uploadAbortController) {
+        item.uploadAbortController = null;
+      }
+    }
     item.isPutComplete = true;
   }
+  await stopIfDiaryMediaUploadDiscarded(item, discardContext);
   updateUploadProgress(item, 95, "업로드를 확인하고 있어요…");
-  const completedPayload = await requestJson(
-    mediaCompleteUrl(uploadsUrl, intent.uploadId),
-    {
-      body: "{}",
-      cache: "no-store",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken": csrfToken,
+  let completedPayload;
+  try {
+    completedPayload = await requestJson(
+      mediaCompleteUrl(uploadsUrl, intent.uploadId),
+      {
+        body: "{}",
+        cache: "no-store",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrfToken,
+        },
+        method: "POST",
       },
-      method: "POST",
-    },
-  );
+    );
+  } catch (error) {
+    if (item.isDiscarded) {
+      await stopIfDiaryMediaUploadDiscarded(item, discardContext);
+    }
+    throw error;
+  }
   readCompletedUpload(completedPayload, intent.uploadId);
   item.uploadId = intent.uploadId;
+  await stopIfDiaryMediaUploadDiscarded(item, discardContext);
   updateUploadProgress(item, 100, "업로드 완료");
   return item.uploadId;
 }
@@ -749,105 +914,129 @@ function mediaCompleteUrl(uploadsUrl, uploadId) {
   return `${collectionUrl}${encodeURIComponent(String(uploadId))}/complete/`;
 }
 
-function putFileWithProgress(intent, file, onProgress) {
-  if (typeof XMLHttpRequest !== "function") {
-    onProgress(20);
-    const controller =
-      typeof AbortController === "function" ? new AbortController() : null;
-    const timeoutId =
-      controller && typeof setTimeout === "function"
-        ? setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS)
-        : null;
-    return fetch(intent.uploadUrl, {
-      body: file,
-      cache: "no-store",
-      credentials: "omit",
-      headers: intent.requiredHeaders,
-      method: "PUT",
-      redirect: "error",
-      ...(controller ? { signal: controller.signal } : {}),
-    })
-      .then((response) => {
-        if (!response.ok || response.redirected) {
-          throw new Error("파일 저장소가 업로드를 거부했습니다.");
-        }
-        onProgress(92);
-      })
-      .catch((error) => {
-        if (controller?.signal.aborted) {
-          throw new Error(
-            "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
-          );
-        }
-        throw error;
-      })
-      .finally(() => {
-        if (timeoutId !== null && typeof clearTimeout === "function") {
-          clearTimeout(timeoutId);
-        }
-      });
-  }
-
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("PUT", intent.uploadUrl, true);
-    request.withCredentials = false;
-    request.timeout = MEDIA_UPLOAD_TIMEOUT_MS;
-    Object.entries(intent.requiredHeaders).forEach(([name, value]) => {
-      request.setRequestHeader(name, value);
-    });
-    request.upload?.addEventListener("progress", (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.round((event.loaded / event.total) * 92));
-      }
-    });
-    request.addEventListener("load", () => {
-      if (
-        request.status >= 200 &&
-        request.status < 300 &&
-        isMatchingUploadResponseUrl(intent.uploadUrl, request.responseURL)
-      ) {
-        onProgress(92);
-        resolve();
-      } else {
-        reject(
-          new Error(
-            "파일 저장소가 업로드를 거부했거나 최종 업로드 위치를 확인하지 못했습니다.",
-          ),
-        );
-      }
-    });
-    request.addEventListener("error", () => {
-      reject(new Error("파일을 올리는 중 네트워크 연결이 끊겼습니다."));
-    });
-    request.addEventListener("abort", () => {
-      reject(new Error("파일 업로드가 취소되었습니다."));
-    });
-    request.addEventListener("timeout", () => {
-      reject(
-        new Error("파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요."),
-      );
-    });
-    request.send(file);
-  });
+function mediaDiscardUrl(uploadsUrl, uploadId) {
+  const collectionUrl = String(uploadsUrl).replace(/\/?$/, "/");
+  return `${collectionUrl}${encodeURIComponent(String(uploadId))}/discard/`;
 }
 
-function isMatchingUploadResponseUrl(uploadUrl, responseUrl) {
-  if (typeof responseUrl !== "string" || !responseUrl) {
-    return false;
+function discardDiaryMediaUpload(item, { csrfToken, uploadsUrl }) {
+  const uploadId = item.intent?.uploadId || item.uploadId;
+  if (!uploadId) {
+    return Promise.resolve();
+  }
+  if (item.discardedUploadId === uploadId) {
+    if (item.intent?.uploadId === uploadId) {
+      item.intent = null;
+      item.isPutComplete = false;
+    }
+    if (item.uploadId === uploadId) {
+      item.uploadId = null;
+    }
+    return Promise.resolve();
+  }
+  if (item.discardPromise?.uploadId === uploadId) {
+    return item.discardPromise.promise;
+  }
+
+  const promise = requestJson(mediaDiscardUrl(uploadsUrl, uploadId), {
+    body: "{}",
+    cache: "no-store",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": csrfToken,
+    },
+    method: "POST",
+  })
+    .then(() => {
+      item.discardedUploadId = uploadId;
+      if (item.intent?.uploadId === uploadId) {
+        item.intent = null;
+        item.isPutComplete = false;
+      }
+      if (item.uploadId === uploadId) {
+        item.uploadId = null;
+      }
+    })
+    .finally(() => {
+      if (item.discardPromise?.promise === promise) {
+        item.discardPromise = null;
+      }
+    });
+  item.discardPromise = { promise, uploadId };
+  return promise;
+}
+
+async function stopIfDiaryMediaUploadDiscarded(item, context) {
+  if (!item.isDiscarded) {
+    return;
   }
   try {
-    const expected = new URL(uploadUrl, window.location.origin);
-    const actual = new URL(responseUrl, window.location.origin);
-    return (
-      expected.origin === actual.origin && expected.pathname === actual.pathname
-    );
-  } catch {
-    return false;
+    await discardDiaryMediaUpload(item, context);
+  } catch (error) {
+    redirectWhenAuthenticationExpired(error);
   }
+  throw new MediaUploadCancelledError();
+}
+
+function putFileWithProgress(intent, file, onProgress, { signal } = {}) {
+  if (signal?.aborted) {
+    return Promise.reject(new MediaUploadCancelledError());
+  }
+  onProgress(20);
+  const controller =
+    typeof AbortController === "function" ? new AbortController() : null;
+  let didTimeOut = false;
+  const abortUpload = () => controller?.abort();
+  signal?.addEventListener?.("abort", abortUpload, { once: true });
+  const timeoutId =
+    controller && typeof setTimeout === "function"
+      ? setTimeout(() => {
+          didTimeOut = true;
+          controller.abort();
+        }, MEDIA_UPLOAD_TIMEOUT_MS)
+      : null;
+  return fetch(intent.uploadUrl, {
+    body: file,
+    cache: "no-store",
+    credentials: "omit",
+    headers: intent.requiredHeaders,
+    method: "PUT",
+    redirect: "error",
+    ...(controller?.signal || signal
+      ? { signal: controller?.signal || signal }
+      : {}),
+  })
+    .then((response) => {
+      if (response.redirected) {
+        throw new Error("파일 저장소가 업로드를 다른 위치로 보냈습니다.");
+      }
+      if (!response.ok) {
+        throw new DirectPutResponseError(response.status);
+      }
+      onProgress(92);
+    })
+    .catch((error) => {
+      if (signal?.aborted) {
+        throw new MediaUploadCancelledError();
+      }
+      if (didTimeOut) {
+        throw new Error(
+          "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
+        );
+      }
+      throw error;
+    })
+    .finally(() => {
+      signal?.removeEventListener?.("abort", abortUpload);
+      if (timeoutId !== null && typeof clearTimeout === "function") {
+        clearTimeout(timeoutId);
+      }
+    });
 }
 
 function updateUploadProgress(item, value, label) {
+  item.uploadProgressValue = value;
+  item.uploadProgressLabel = label;
   if (item.progress) {
     item.progress.value = value;
   }
@@ -858,6 +1047,7 @@ function updateUploadProgress(item, value, label) {
 
 function markUploadFailed(item) {
   item.uploadId = null;
+  item.uploadState = "failed";
   updateUploadProgress(
     item,
     item.isPutComplete ? 95 : 0,
@@ -870,11 +1060,16 @@ function markUploadFailed(item) {
 function resetUploadState(item) {
   item.intent = null;
   item.isPutComplete = false;
+  item.needsFreshIntent = false;
   item.uploadId = null;
-  updateUploadProgress(item, 0, "업로드 실패 · 다시 시도해 주세요");
+  item.uploadState = "pending";
+  updateUploadProgress(item, 0, "업로드 전");
 }
 
 function uploadIntentCannotBeRetried(error) {
+  if (error instanceof DirectPutResponseError) {
+    return error.status >= 400 && error.status < 500;
+  }
   if (!(error instanceof ApiRequestError)) {
     return false;
   }
@@ -1064,6 +1259,7 @@ function renderDiaryPage({
 }) {
   status.hidden = true;
   status.replaceChildren();
+  Array.from(list.children).forEach((item) => item.disposeDiaryItem?.());
   if (page.results.length === 0) {
     list.replaceChildren();
     list.hidden = true;
@@ -1094,9 +1290,22 @@ function createDiaryItem(initialEntry, callbacks) {
   let entry = initialEntry;
   let isMutating = false;
   let deletionRequiresRefresh = false;
+  let itemWasDisposed = false;
+  let activeEditMedia = null;
   const item = document.createElement("li");
   item.className = "diary-list__item";
   const card = document.createElement("article");
+  const releaseEditMedia = ({ discardUploads = true } = {}) => {
+    const editMedia = activeEditMedia;
+    activeEditMedia = null;
+    editMedia?.destroy({ discardUploads });
+  };
+  item.disposeDiaryItem = () => {
+    itemWasDisposed = true;
+    if (!isMutating) {
+      releaseEditMedia();
+    }
+  };
 
   const renderCard = ({ focusEdit = false } = {}) => {
     card.className = `surface diary-card${entry.isMine ? " diary-card--mine" : ""}`;
@@ -1371,12 +1580,15 @@ function createDiaryItem(initialEntry, callbacks) {
     updateCharacterCount(contentInput, current);
 
     const editMedia = createDiaryMediaController({
+      csrfToken: callbacks.csrfToken,
       existingAttachments: attachmentItems(entry),
       input: mediaInput,
+      purpose: "diaryEntry",
       selection: mediaSelection,
       status: mediaStatus,
       uploadsUrl: callbacks.uploadsUrl,
     });
+    activeEditMedia = editMedia;
     editMedia?.setDisabled(false);
 
     const fields = {
@@ -1388,7 +1600,7 @@ function createDiaryItem(initialEntry, callbacks) {
     });
     cancel.addEventListener("click", () => {
       if (!isMutating) {
-        editMedia?.destroy();
+        releaseEditMedia();
         renderCard({ focusEdit: true });
       }
     });
@@ -1437,7 +1649,7 @@ function createDiaryItem(initialEntry, callbacks) {
           },
         );
         entry = readDiaryEntry(payload?.success);
-        editMedia?.destroy();
+        releaseEditMedia({ discardUploads: false });
         renderCard({ focusEdit: true });
         showDiaryToast("일기를 수정했어요.", "success");
         await callbacks.onEntryChanged();
@@ -1459,6 +1671,9 @@ function createDiaryItem(initialEntry, callbacks) {
           });
         }
       } finally {
+        if (itemWasDisposed && activeEditMedia) {
+          releaseEditMedia();
+        }
         isMutating = false;
         form.setAttribute("aria-busy", "false");
         contentInput.disabled = false;
@@ -1769,6 +1984,10 @@ function redirectWhenAuthenticationExpired(error) {
     error instanceof ApiRequestError &&
     error.apiError?.errorCode === "AUTHENTICATION_REQUIRED"
   ) {
+    if (diaryAuthenticationRedirectStarted) {
+      return true;
+    }
+    diaryAuthenticationRedirectStarted = true;
     const next = `${window.location.pathname}${window.location.search}`;
     window.location.assign(`/login/?next=${encodeURIComponent(next)}`);
     return true;

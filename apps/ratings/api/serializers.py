@@ -715,6 +715,25 @@ class MediaUploadCompleteRequestSerializerExtension(OpenApiSerializerExtension):
         }
 
 
+class MediaUploadDiscardRequestSerializer(StrictRequestSerializer):
+    pass
+
+
+class MediaUploadDiscardRequestSerializerExtension(OpenApiSerializerExtension):
+    target_class = MediaUploadDiscardRequestSerializer
+
+    @override
+    def map_serializer(
+        self,
+        auto_schema: "AutoSchema",
+        direction: Direction,
+    ) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+        }
+
+
 class InitiatedMediaUploadDataSerializer(serializers.Serializer[object]):
     uploadId = serializers.UUIDField(source="upload_id", read_only=True)
     uploadUrl = serializers.URLField(source="upload_url", read_only=True)
@@ -1351,6 +1370,12 @@ class CompletedMediaUploadSuccessEnvelopeSerializer(serializers.Serializer[objec
     resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
     error = NullOnlyField()
     success = CompletedMediaUploadDataSerializer()
+
+
+class MediaUploadDiscardedSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = NullOnlyField()
 
 
 class ScoreChangeCommentSuccessEnvelopeSerializer(serializers.Serializer[object]):

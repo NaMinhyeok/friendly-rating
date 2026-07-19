@@ -116,6 +116,7 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
         "/api/v1/diary-entries/{diary_entry_id}/",
         "/api/v1/media-uploads/",
         "/api/v1/media-uploads/{upload_id}/complete/",
+        "/api/v1/media-uploads/{upload_id}/discard/",
         "/api/v1/push-devices/register/",
         "/api/v1/push-devices/unregister/",
         "/api/v1/relationship-scores/",
@@ -278,7 +279,7 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
     }
 
 
-def test_media_upload_operations_declare_direct_upload_and_completion_contract(client):
+def test_media_upload_operations_declare_direct_upload_lifecycle_contract(client):
     document = client.get(
         reverse("api-schema"),
         HTTP_ACCEPT="application/json",
@@ -286,8 +287,15 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
     paths = document["paths"]
     initiate = paths["/api/v1/media-uploads/"]["post"]
     complete = paths["/api/v1/media-uploads/{upload_id}/complete/"]["post"]
+    discard = paths["/api/v1/media-uploads/{upload_id}/discard/"]["post"]
+    assert discard["description"] == (
+        "현재 참가자가 업로드했지만 아직 점수 변경, 댓글 또는 공유 일기에 "
+        "연결하지 않은 파일을 즉시 정리합니다. 이미 폐기한 업로드를 다시 "
+        "요청하거나 존재하지 않는 업로드 ID를 요청해도 성공으로 응답합니다. "
+        "빈 JSON 객체와 CSRF 토큰을 전송해야 합니다."
+    )
 
-    for operation in (initiate, complete):
+    for operation in (initiate, complete, discard):
         assert operation["security"] == [{"cookieAuth": []}]
         csrf = next(
             parameter
@@ -365,28 +373,28 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
         },
     ]
 
-    complete_parameters = {
-        parameter["name"]: parameter for parameter in complete["parameters"]
-    }
-    assert complete_parameters["upload_id"] == {
-        "in": "path",
-        "name": "upload_id",
-        "schema": {"type": "string", "format": "uuid"},
-        "required": True,
-    }
-    complete_request = _resolve_schema(
-        document,
-        complete["requestBody"]["content"]["application/json"]["schema"],
-    )
-    assert complete_request == {
-        "type": "object",
-        "additionalProperties": False,
-    }
+    for operation in (complete, discard):
+        parameters = {
+            parameter["name"]: parameter for parameter in operation["parameters"]
+        }
+        assert parameters["upload_id"] == {
+            "in": "path",
+            "name": "upload_id",
+            "schema": {"type": "string", "format": "uuid"},
+            "required": True,
+        }
+        request_schema = _resolve_schema(
+            document,
+            operation["requestBody"]["content"]["application/json"]["schema"],
+        )
+        assert request_schema == {
+            "type": "object",
+            "additionalProperties": False,
+        }
 
     shared_error_responses = {
         "400": "BadRequestErrorEnvelope",
         "403": "MediaForbiddenErrorEnvelope",
-        "404": "NotFoundErrorEnvelope",
         "406": "NotAcceptableErrorEnvelope",
         "409": "MediaUploadConflictErrorEnvelope",
         "413": "RequestBodyTooLargeErrorEnvelope",
@@ -395,14 +403,22 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
         "503": "MediaUploadsUnavailableErrorEnvelope",
     }
     operation_contracts = (
-        (initiate, "201", "MediaUploadInitiatedSuccessEnvelope"),
-        (complete, "200", "CompletedMediaUploadSuccessEnvelope"),
+        (initiate, "201", "MediaUploadInitiatedSuccessEnvelope", True),
+        (complete, "200", "CompletedMediaUploadSuccessEnvelope", True),
+        (discard, "200", "MediaUploadDiscardedSuccessEnvelope", False),
     )
-    for operation, success_status, success_component in operation_contracts:
+    for (
+        operation,
+        success_status,
+        success_component,
+        includes_not_found,
+    ) in operation_contracts:
         response_components = {
             success_status: success_component,
             **shared_error_responses,
         }
+        if includes_not_found:
+            response_components["404"] = "NotFoundErrorEnvelope"
         assert set(operation["responses"]) == set(response_components)
         for status_code, component_name in response_components.items():
             assert operation["responses"][status_code]["content"]["application/json"][
@@ -427,6 +443,10 @@ def test_media_upload_operations_declare_direct_upload_and_completion_contract(c
     assert schemas["CompletedMediaUploadSuccessEnvelope"]["properties"]["success"] == {
         "$ref": "#/components/schemas/CompletedMediaUploadData"
     }
+    assert _schema_types(
+        document,
+        schemas["MediaUploadDiscardedSuccessEnvelope"]["properties"]["success"],
+    ) == {"null"}
     completed_data = schemas["CompletedMediaUploadData"]
     completed_fields = {"id", "kind", "fileName", "contentType", "byteSize"}
     assert set(completed_data["required"]) == completed_fields

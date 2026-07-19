@@ -126,6 +126,16 @@ function mutationSuccess(value) {
   return { error: null, resultType: "SUCCESS", success: value };
 }
 
+function deferred() {
+  let reject;
+  let resolve;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    reject = rejectPromise;
+    resolve = resolvePromise;
+  });
+  return { promise, reject, resolve };
+}
+
 function mediaAttachment({
   byteSize = 512,
   contentType = "image/jpeg",
@@ -219,6 +229,7 @@ function createDiaryHarness({
     search,
   };
   const sandbox = {
+    AbortController,
     URL,
     URLSearchParams,
     console,
@@ -319,6 +330,15 @@ function findByAriaLabel(element, label) {
   );
 }
 
+function findUploadProgressLabel(selection, fileName) {
+  const preview = selection.children.find((child) =>
+    findByAriaLabel(child, `${fileName} 삭제`),
+  );
+  return descendants(preview).find(
+    (child) => child.className === "media-upload-progress__label",
+  );
+}
+
 function readMediaValidation(files) {
   const sandbox = {
     console,
@@ -340,41 +360,21 @@ function readMediaValidation(files) {
   return sandbox.mediaValidation;
 }
 
-function runXhrUpload(responseURL) {
-  class FakeXMLHttpRequest {
-    constructor() {
-      this.listeners = {};
-      this.responseURL = responseURL;
-      this.status = 200;
-      this.upload = { addEventListener() {} };
-    }
-
-    addEventListener(type, listener) {
-      this.listeners[type] = listener;
-    }
-
-    open(method, url, isAsync) {
-      this.method = method;
-      this.url = url;
-      this.isAsync = isAsync;
-    }
-
-    send(body) {
-      this.body = body;
-      this.listeners.load();
-    }
-
-    setRequestHeader() {}
-  }
-
+function runDirectFetchUpload(fetchImplementation, { signal } = {}) {
+  const fetchCalls = [];
   const sandbox = {
+    AbortController,
     console,
     document: {
       querySelector() {
         return null;
       },
     },
-    XMLHttpRequest: FakeXMLHttpRequest,
+    fetch(url, options) {
+      fetchCalls.push({ options, url });
+      return fetchImplementation(url, options);
+    },
+    signal,
     URL,
     window: { location: { origin: "https://friendly.test" } },
   };
@@ -387,12 +387,13 @@ function runXhrUpload(responseURL) {
         },
         { name: "오늘.jpg", size: 512, type: "image/jpeg" },
         () => undefined,
+        { signal: globalThis.signal },
       );
     `,
     sandbox,
     { filename: diaryScriptPath },
   );
-  return sandbox.uploadPromise;
+  return { fetchCalls, promise: sandbox.uploadPromise };
 }
 
 test("diary fetches and safely renders the requested shared page", async () => {
@@ -515,6 +516,7 @@ test("diary directly uploads selected photos once and renders safe attachments",
     },
     { name: "산책.png", size: 1024, type: "image/png" },
   ];
+  const pendingPuts = new Map(uploadIds.map((id) => [id, deferred()]));
   let initiatedCount = 0;
   let created = null;
   const harness = createDiaryHarness({
@@ -534,7 +536,7 @@ test("diary directly uploads selected photos once and renders safe attachments",
             error: null,
             resultType: "SUCCESS",
             success: {
-              expiresAt: "2026-07-19T12:00:00Z",
+              expiresAt: "2099-07-19T12:00:00Z",
               requiredHeaders: { "Content-Type": files[initiatedCount - 1].type },
               uploadId,
               uploadUrl: `https://r2.example.test/pending/${uploadId}`,
@@ -543,7 +545,8 @@ test("diary directly uploads selected photos once and renders safe attachments",
         );
       }
       if (target.startsWith("https://r2.example.test/pending/")) {
-        return Promise.resolve({ ok: true, redirected: false });
+        const uploadId = uploadIds.find((id) => target.endsWith(id));
+        return pendingPuts.get(uploadId).promise;
       }
       const completedUploadId = uploadIds.find((uploadId) =>
         target.endsWith(`/media-uploads/${uploadId}/complete/`),
@@ -585,16 +588,67 @@ test("diary directly uploads selected photos once and renders safe attachments",
 
   harness.mediaInput.files = files;
   harness.mediaInput.listeners.change();
-  harness.diaryContent.value = "사진과 함께 남긴 기록";
-  harness.createForm.listeners.submit({ preventDefault() {} });
-  harness.createForm.listeners.submit({ preventDefault() {} });
   await settleAsyncWork();
 
   const initiationCalls = harness.fetchCalls.filter(
     (call) =>
       call.url === "/api/v1/media-uploads/" && call.options.method === "POST",
   );
-  assert.equal(initiationCalls.length, 2);
+  const directPuts = harness.fetchCalls.filter((call) =>
+    String(call.url).startsWith("https://r2.example.test/pending/"),
+  );
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) =>
+        call.url === "/api/v1/media-uploads/" && call.options.method === "POST",
+    ).length,
+    2,
+  );
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).startsWith("https://r2.example.test/pending/"),
+    ).length,
+    2,
+  );
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) =>
+        call.url === "/api/v1/diary-entries/" && call.options.method === "POST",
+    ),
+    false,
+  );
+
+  harness.diaryContent.value = "사진과 함께 남긴 기록";
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) =>
+        call.url === "/api/v1/diary-entries/" && call.options.method === "POST",
+    ),
+    false,
+  );
+
+  pendingPuts.get(uploadIds[1]).resolve({ ok: true, redirected: false });
+  await settleAsyncWork();
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) =>
+        call.url === "/api/v1/diary-entries/" && call.options.method === "POST",
+    ),
+    false,
+  );
+  pendingPuts.get(uploadIds[0]).resolve({ ok: true, redirected: false });
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) =>
+        call.url === "/api/v1/media-uploads/" && call.options.method === "POST",
+    ).length,
+    2,
+  );
   assert.deepEqual(
     initiationCalls.map((call) => JSON.parse(call.options.body)),
     files.map((file) => ({
@@ -605,10 +659,12 @@ test("diary directly uploads selected photos once and renders safe attachments",
       purpose: "diaryEntry",
     })),
   );
-  const directPuts = harness.fetchCalls.filter((call) =>
-    String(call.url).startsWith("https://r2.example.test/pending/"),
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).startsWith("https://r2.example.test/pending/"),
+    ).length,
+    2,
   );
-  assert.equal(directPuts.length, 2);
   assert.equal(directPuts[0].options.credentials, "omit");
   assert.equal(directPuts[0].options.redirect, "error");
   assert.equal(directPuts[0].options.body, files[0]);
@@ -627,21 +683,521 @@ test("diary directly uploads selected photos once and renders safe attachments",
   assert.equal(harness.createdTags.includes("img"), true);
   assert.equal(harness.createdTags.includes("script"), false);
   assert.equal(harness.sandbox.compromised, undefined);
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).endsWith("/discard/"),
+    ).length,
+    0,
+  );
 });
 
-test("XHR upload accepts success only from the intended origin and path", async () => {
-  await assert.doesNotReject(
-    runXhrUpload(
-      "https://r2.example.test/pending/original?provider-response=ok",
+test("diary preserves each upload status when another selection rerenders previews", async () => {
+  const uploadIds = [
+    "00000000-0000-4000-8000-000000000061",
+    "00000000-0000-4000-8000-000000000062",
+    "00000000-0000-4000-8000-000000000063",
+  ];
+  const files = [
+    { name: "진행 중.jpg", size: 512, type: "image/jpeg" },
+    { name: "완료.jpg", size: 512, type: "image/jpeg" },
+    { name: "재렌더.jpg", size: 512, type: "image/jpeg" },
+  ];
+  const pendingFirstPut = deferred();
+  let initiatedCount = 0;
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(jsonResponse(200, diaryPage()));
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        const index = initiatedCount;
+        initiatedCount += 1;
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": files[index].type },
+              uploadId: uploadIds[index],
+              uploadUrl: `https://r2.example.test/pending/${uploadIds[index]}`,
+            },
+          }),
+        );
+      }
+      if (target === `https://r2.example.test/pending/${uploadIds[0]}`) {
+        return pendingFirstPut.promise;
+      }
+      if (target.startsWith("https://r2.example.test/pending/")) {
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      const completedIndex = uploadIds.findIndex((uploadId) =>
+        target.endsWith(`/media-uploads/${uploadId}/complete/`),
+      );
+      if (completedIndex >= 0) {
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            mutationSuccess({
+              byteSize: files[completedIndex].size,
+              contentType: files[completedIndex].type,
+              fileName: files[completedIndex].name,
+              id: uploadIds[completedIndex],
+              kind: "image",
+            }),
+          ),
+        );
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [files[0]];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  harness.mediaInput.files = [files[1]];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+
+  assert.equal(
+    findUploadProgressLabel(harness.mediaSelection, files[0].name).textContent,
+    "파일을 올리고 있어요…",
+  );
+  assert.equal(
+    findUploadProgressLabel(harness.mediaSelection, files[1].name).textContent,
+    "업로드 완료",
+  );
+
+  pendingFirstPut.reject(new Error("upload failed"));
+  await settleAsyncWork();
+  harness.mediaInput.files = [files[2]];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+
+  assert.equal(
+    findUploadProgressLabel(harness.mediaSelection, files[0].name).textContent,
+    "업로드 실패 · 다시 시도해 주세요",
+  );
+  assert.equal(
+    findUploadProgressLabel(harness.mediaSelection, files[1].name).textContent,
+    "업로드 완료",
+  );
+});
+
+test("removing a selected video aborts its active upload and discards the intent", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000031";
+  const file = { name: "산책.mov", size: 2048, type: "video/quicktime" };
+  let putWasAborted = false;
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(jsonResponse(200, diaryPage()));
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/video",
+            },
+          }),
+        );
+      }
+      if (target === "https://r2.example.test/pending/video") {
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener(
+            "abort",
+            () => {
+              putWasAborted = true;
+              reject(new Error("upload aborted"));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/discard/`)) {
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) => call.url === "https://r2.example.test/pending/video",
+    ),
+    true,
+  );
+
+  findByAriaLabel(harness.mediaSelection, `${file.name} 삭제`).listeners.click();
+  await settleAsyncWork();
+
+  assert.equal(putWasAborted, true);
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).endsWith(`/media-uploads/${uploadId}/discard/`),
+    ).length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.some((call) =>
+      String(call.url).endsWith(`/media-uploads/${uploadId}/complete/`),
+    ),
+    false,
+  );
+  assert.equal(harness.mediaSelection.hidden, true);
+  assert.equal(harness.mediaStatus.textContent, "");
+});
+
+test("removing media before the intent response still discards it without uploading", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000032";
+  const file = { name: "기다림.jpg", size: 512, type: "image/jpeg" };
+  const pendingIntent = deferred();
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(jsonResponse(200, diaryPage()));
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        return pendingIntent.promise;
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/discard/`)) {
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  findByAriaLabel(harness.mediaSelection, `${file.name} 삭제`).listeners.click();
+  pendingIntent.resolve(
+    jsonResponse(201, {
+      error: null,
+      resultType: "SUCCESS",
+      success: {
+        expiresAt: "2099-07-19T12:00:00Z",
+        requiredHeaders: { "Content-Type": file.type },
+        uploadId,
+        uploadUrl: "https://r2.example.test/pending/late-intent",
+      },
+    }),
+  );
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).endsWith(`/media-uploads/${uploadId}/discard/`),
+    ).length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.some((call) =>
+      String(call.url).startsWith("https://r2.example.test/pending/"),
+    ),
+    false,
+  );
+  assert.equal(harness.mediaStatus.textContent, "");
+});
+
+test("removing media during completion discards the completed race once", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000033";
+  const file = { name: "완료경합.webp", size: 768, type: "image/webp" };
+  const pendingCompletion = deferred();
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(jsonResponse(200, diaryPage()));
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/completion-race",
+            },
+          }),
+        );
+      }
+      if (target === "https://r2.example.test/pending/completion-race") {
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/complete/`)) {
+        return pendingCompletion.promise;
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/discard/`)) {
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.equal(
+    harness.fetchCalls.some((call) =>
+      String(call.url).endsWith(`/media-uploads/${uploadId}/complete/`),
+    ),
+    true,
+  );
+
+  findByAriaLabel(harness.mediaSelection, `${file.name} 삭제`).listeners.click();
+  pendingCompletion.resolve(
+    jsonResponse(
+      200,
+      mutationSuccess({
+        byteSize: file.size,
+        contentType: file.type,
+        fileName: file.name,
+        id: uploadId,
+        kind: "image",
+      }),
     ),
   );
-  await assert.rejects(
-    runXhrUpload("https://redirected.example.test/pending/original"),
-    /최종 업로드 위치/,
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).endsWith(`/media-uploads/${uploadId}/discard/`),
+    ).length,
+    1,
   );
-  await assert.rejects(
-    runXhrUpload("https://r2.example.test/pending/different"),
-    /최종 업로드 위치/,
+  assert.equal(harness.mediaStatus.textContent, "");
+});
+
+test("direct upload refuses redirects and keeps credentials out of storage requests", async () => {
+  const upload = runDirectFetchUpload(() =>
+    Promise.resolve({ ok: true, redirected: true, status: 200 }),
+  );
+
+  assert.equal(upload.fetchCalls.length, 1);
+  assert.equal(upload.fetchCalls[0].options.method, "PUT");
+  assert.equal(upload.fetchCalls[0].options.redirect, "error");
+  assert.equal(upload.fetchCalls[0].options.credentials, "omit");
+  assert.equal(upload.fetchCalls[0].options.cache, "no-store");
+  await assert.rejects(upload.promise, /다른 위치/);
+});
+
+test("an upload abort signal cancels the direct fetch PUT", async () => {
+  const controller = new AbortController();
+  let requestSignal = null;
+  const upload = runDirectFetchUpload(
+    (_url, options) => {
+      requestSignal = options.signal;
+      return new Promise((_resolve, reject) => {
+        requestSignal.addEventListener(
+          "abort",
+          () => reject(new Error("fetch aborted")),
+          { once: true },
+        );
+      });
+    },
+    { signal: controller.signal },
+  );
+
+  controller.abort();
+
+  assert.equal(requestSignal.aborted, true);
+  await assert.rejects(upload.promise, (error) => {
+    assert.equal(error.name, "MediaUploadCancelledError");
+    return true;
+  });
+});
+
+test("a direct PUT 4xx discards its intent before retrying with a fresh URL", async () => {
+  const oldUploadId = "00000000-0000-4000-8000-000000000071";
+  const newUploadId = "00000000-0000-4000-8000-000000000072";
+  const file = { name: "새 URL 필요.jpg", size: 512, type: "image/jpeg" };
+  const events = [];
+  let initiatedCount = 0;
+  let created = null;
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(
+          jsonResponse(200, diaryPage({ results: created ? [created] : [] })),
+        );
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        const uploadId = initiatedCount === 0 ? oldUploadId : newUploadId;
+        initiatedCount += 1;
+        events.push(uploadId === oldUploadId ? "initiate-old" : "initiate-new");
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: `https://r2.example.test/pending/${uploadId}`,
+            },
+          }),
+        );
+      }
+      if (target === `https://r2.example.test/pending/${oldUploadId}`) {
+        events.push("put-old-403");
+        return Promise.resolve({ ok: false, redirected: false, status: 403 });
+      }
+      if (target.endsWith(`/media-uploads/${oldUploadId}/discard/`)) {
+        events.push("discard-old");
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      if (target === `https://r2.example.test/pending/${newUploadId}`) {
+        events.push("put-new");
+        return Promise.resolve({ ok: true, redirected: false, status: 200 });
+      }
+      if (target.endsWith(`/media-uploads/${newUploadId}/complete/`)) {
+        events.push("complete-new");
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            mutationSuccess({
+              byteSize: file.size,
+              contentType: file.type,
+              fileName: file.name,
+              id: newUploadId,
+              kind: "image",
+            }),
+          ),
+        );
+      }
+      if (target === "/api/v1/diary-entries/" && options.method === "POST") {
+        events.push("create-diary");
+        created = diaryEntry({
+          attachments: [mediaAttachment({ fileName: file.name, id: newUploadId })],
+          content: "새 URL로 저장",
+        });
+        return Promise.resolve(jsonResponse(201, mutationSuccess(created)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.deepEqual(events, ["initiate-old", "put-old-403"]);
+
+  harness.diaryContent.value = "새 URL로 저장";
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  assert.equal(initiatedCount, 2);
+  assert.deepEqual(events, [
+    "initiate-old",
+    "put-old-403",
+    "discard-old",
+    "initiate-new",
+    "put-new",
+    "complete-new",
+    "create-diary",
+  ]);
+});
+
+test("a direct PUT 5xx retries the same still-valid intent", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000073";
+  const file = { name: "같은 URL 재시도.jpg", size: 512, type: "image/jpeg" };
+  let initiatedCount = 0;
+  let putCount = 0;
+  let created = null;
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(
+          jsonResponse(200, diaryPage({ results: created ? [created] : [] })),
+        );
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        initiatedCount += 1;
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/retry-5xx",
+            },
+          }),
+        );
+      }
+      if (target === "https://r2.example.test/pending/retry-5xx") {
+        putCount += 1;
+        return Promise.resolve({
+          ok: putCount > 1,
+          redirected: false,
+          status: putCount > 1 ? 200 : 503,
+        });
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/complete/`)) {
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            mutationSuccess({
+              byteSize: file.size,
+              contentType: file.type,
+              fileName: file.name,
+              id: uploadId,
+              kind: "image",
+            }),
+          ),
+        );
+      }
+      if (target === "/api/v1/diary-entries/" && options.method === "POST") {
+        created = diaryEntry({
+          attachments: [mediaAttachment({ fileName: file.name, id: uploadId })],
+          content: "같은 URL로 저장",
+        });
+        return Promise.resolve(jsonResponse(201, mutationSuccess(created)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  harness.diaryContent.value = "같은 URL로 저장";
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  assert.equal(initiatedCount, 1);
+  assert.equal(putCount, 2);
+  assert.equal(
+    harness.fetchCalls.some((call) => String(call.url).endsWith("/discard/")),
+    false,
   );
 });
 
@@ -760,6 +1316,147 @@ test("diary retries completion with the same uploaded intent after uncertain and
   );
   assert.deepEqual(JSON.parse(createCall.options.body).mediaUploadIds, [
     uploadId,
+  ]);
+});
+
+test("a stale intent is discarded successfully before diary upload retry creates another", async () => {
+  const oldUploadId = "00000000-0000-4000-8000-000000000051";
+  const newUploadId = "00000000-0000-4000-8000-000000000052";
+  const file = { name: "새로 준비.jpg", size: 512, type: "image/jpeg" };
+  const events = [];
+  let discardCount = 0;
+  let initiateCount = 0;
+  let created = null;
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(
+          jsonResponse(200, diaryPage({ results: created ? [created] : [] })),
+        );
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        const isFirstIntent = initiateCount === 0;
+        const uploadId = isFirstIntent ? oldUploadId : newUploadId;
+        initiateCount += 1;
+        events.push(isFirstIntent ? "initiate-old" : "initiate-new");
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: `https://r2.example.test/pending/${uploadId}`,
+            },
+          }),
+        );
+      }
+      if (target === `https://r2.example.test/pending/${oldUploadId}`) {
+        events.push("put-old");
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (target === `https://r2.example.test/pending/${newUploadId}`) {
+        events.push("put-new");
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (target.endsWith(`/media-uploads/${oldUploadId}/complete/`)) {
+        events.push("complete-old-expired");
+        return Promise.resolve(
+          jsonResponse(409, {
+            error: {
+              details: [],
+              errorCode: "MEDIA_UPLOAD_CONFLICT",
+              errorType: "CONFLICT",
+              reason: "업로드 준비가 만료되었어요.",
+            },
+            resultType: "ERROR",
+            success: null,
+          }),
+        );
+      }
+      if (target.endsWith(`/media-uploads/${oldUploadId}/discard/`)) {
+        discardCount += 1;
+        events.push(discardCount === 1 ? "discard-old-failed" : "discard-old");
+        if (discardCount === 1) {
+          return Promise.resolve(
+            jsonResponse(503, {
+              error: {
+                details: [],
+                errorCode: "MEDIA_UPLOADS_UNAVAILABLE",
+                errorType: "EXTERNAL_SERVICE",
+                reason: "파일 정리를 잠시 수행할 수 없어요.",
+              },
+              resultType: "ERROR",
+              success: null,
+            }),
+          );
+        }
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      if (target.endsWith(`/media-uploads/${newUploadId}/complete/`)) {
+        events.push("complete-new");
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            mutationSuccess({
+              byteSize: file.size,
+              contentType: file.type,
+              fileName: file.name,
+              id: newUploadId,
+              kind: "image",
+            }),
+          ),
+        );
+      }
+      if (target === "/api/v1/diary-entries/" && options.method === "POST") {
+        events.push("create-diary");
+        created = diaryEntry({
+          attachments: [mediaAttachment({ fileName: file.name, id: newUploadId })],
+          content: "새 intent로 저장",
+        });
+        return Promise.resolve(jsonResponse(201, mutationSuccess(created)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.deepEqual(events, ["initiate-old", "put-old", "complete-old-expired"]);
+
+  harness.diaryContent.value = "새 intent로 저장";
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+  assert.equal(initiateCount, 1);
+  assert.deepEqual(events.slice(-1), ["discard-old-failed"]);
+  assert.equal(harness.createSubmit.disabled, false);
+
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  assert.equal(initiateCount, 2);
+  assert.deepEqual(events, [
+    "initiate-old",
+    "put-old",
+    "complete-old-expired",
+    "discard-old-failed",
+    "discard-old",
+    "initiate-new",
+    "put-new",
+    "complete-new",
+    "create-diary",
+  ]);
+  const createCall = harness.fetchCalls.find(
+    (call) =>
+      call.url === "/api/v1/diary-entries/" && call.options.method === "POST",
+  );
+  assert.deepEqual(JSON.parse(createCall.options.body).mediaUploadIds, [
+    newUploadId,
   ]);
 });
 
@@ -1168,6 +1865,280 @@ test("text-only diary edit omits media IDs and preserves existing attachments", 
   assert.match(descendantText(harness.list), /오늘 사진\.jpg 다운로드/);
 });
 
+test("cancelling a diary edit discards only its newly uploaded media", async () => {
+  const retained = mediaAttachment({
+    id: "00000000-0000-4000-8000-000000000041",
+  });
+  const newUploadId = "00000000-0000-4000-8000-000000000042";
+  const newFile = { name: "취소할 사진.png", size: 1024, type: "image/png" };
+  const entry = diaryEntry({ attachments: [retained] });
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(jsonResponse(200, diaryPage({ results: [entry] })));
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": newFile.type },
+              uploadId: newUploadId,
+              uploadUrl: "https://r2.example.test/pending/edit-cancel",
+            },
+          }),
+        );
+      }
+      if (target === "https://r2.example.test/pending/edit-cancel") {
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (target.endsWith(`/media-uploads/${newUploadId}/complete/`)) {
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            mutationSuccess({
+              byteSize: newFile.size,
+              contentType: newFile.type,
+              fileName: newFile.name,
+              id: newUploadId,
+              kind: "image",
+            }),
+          ),
+        );
+      }
+      if (target.endsWith(`/media-uploads/${newUploadId}/discard/`)) {
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  findButton(harness.list, "수정").listeners.click();
+  const editForm = findTag(harness.list, "form");
+  const mediaInput = descendants(editForm).find(
+    (element) => element.tagName === "input" && element.type === "file",
+  );
+  mediaInput.files = [newFile];
+  mediaInput.listeners.change();
+  await settleAsyncWork();
+  findButton(editForm, "취소").listeners.click();
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).endsWith(`/media-uploads/${newUploadId}/discard/`),
+    ).length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.some((call) =>
+      String(call.url).endsWith(`/media-uploads/${retained.id}/discard/`),
+    ),
+    false,
+  );
+  assert.equal(
+    harness.fetchCalls.some((call) => call.options.method === "PATCH"),
+    false,
+  );
+  assert.match(descendantText(harness.list), /오늘 사진\.jpg 다운로드/);
+});
+
+test("refreshing the list aborts and discards an open editor upload", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000081";
+  const file = { name: "목록 교체.jpg", size: 512, type: "image/jpeg" };
+  const existing = diaryEntry({ content: "수정 중인 기록", id: 31 });
+  const created = diaryEntry({ content: "새로 남긴 기록", id: 32 });
+  let putWasAborted = false;
+  let showCreated = false;
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            diaryPage({ results: showCreated ? [created, existing] : [existing] }),
+          ),
+        );
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/list-refresh",
+            },
+          }),
+        );
+      }
+      if (target === "https://r2.example.test/pending/list-refresh") {
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener(
+            "abort",
+            () => {
+              putWasAborted = true;
+              reject(new Error("upload aborted"));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/discard/`)) {
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      if (target === "/api/v1/diary-entries/" && options.method === "POST") {
+        showCreated = true;
+        return Promise.resolve(jsonResponse(201, mutationSuccess(created)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  findButton(harness.list, "수정").listeners.click();
+  const editForm = findTag(harness.list, "form");
+  const editMediaInput = descendants(editForm).find(
+    (element) => element.tagName === "input" && element.type === "file",
+  );
+  editMediaInput.files = [file];
+  editMediaInput.listeners.change();
+  await settleAsyncWork();
+
+  harness.diaryContent.value = created.content;
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  assert.equal(putWasAborted, true);
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).endsWith(`/media-uploads/${uploadId}/discard/`),
+    ).length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.some((call) =>
+      String(call.url).endsWith(`/media-uploads/${uploadId}/complete/`),
+    ),
+    false,
+  );
+  assert.match(descendantText(harness.list), /새로 남긴 기록/);
+});
+
+test("a list refresh does not discard media from an in-flight successful edit", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000082";
+  const file = { name: "저장 중.jpg", size: 512, type: "image/jpeg" };
+  const created = diaryEntry({ content: "동시에 남긴 기록", id: 32 });
+  let entry = diaryEntry({ content: "수정 전", id: 31 });
+  let includeCreated = false;
+  let discardCount = 0;
+  const pendingPatch = deferred();
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            diaryPage({ results: includeCreated ? [created, entry] : [entry] }),
+          ),
+        );
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/edit-in-flight",
+            },
+          }),
+        );
+      }
+      if (target === "https://r2.example.test/pending/edit-in-flight") {
+        return Promise.resolve({ ok: true, redirected: false, status: 200 });
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/complete/`)) {
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            mutationSuccess({
+              byteSize: file.size,
+              contentType: file.type,
+              fileName: file.name,
+              id: uploadId,
+              kind: "image",
+            }),
+          ),
+        );
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/discard/`)) {
+        discardCount += 1;
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      if (target.endsWith("/diary-entries/31/") && options.method === "PATCH") {
+        return pendingPatch.promise;
+      }
+      if (target === "/api/v1/diary-entries/" && options.method === "POST") {
+        includeCreated = true;
+        return Promise.resolve(jsonResponse(201, mutationSuccess(created)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  findButton(harness.list, "수정").listeners.click();
+  const editForm = findTag(harness.list, "form");
+  const editMediaInput = descendants(editForm).find(
+    (element) => element.tagName === "input" && element.type === "file",
+  );
+  editMediaInput.files = [file];
+  editMediaInput.listeners.change();
+  await settleAsyncWork();
+  findByName(editForm, "content").value = "수정 성공";
+  editForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  harness.diaryContent.value = created.content;
+  harness.createForm.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+  assert.equal(discardCount, 0);
+
+  entry = diaryEntry({
+    attachments: [
+      mediaAttachment({
+        byteSize: file.size,
+        contentType: file.type,
+        fileName: file.name,
+        id: uploadId,
+      }),
+    ],
+    content: "수정 성공",
+    id: 31,
+    updatedAt: "2026-07-19T02:23:00Z",
+  });
+  pendingPatch.resolve(jsonResponse(200, mutationSuccess(entry)));
+  await settleAsyncWork();
+
+  assert.equal(discardCount, 0);
+  assert.match(descendantText(harness.list), /수정 성공/);
+  assert.match(descendantText(harness.list), /저장 중\.jpg 다운로드/);
+});
+
 test("diary edit replaces attachments with retained and newly uploaded IDs", async () => {
   const removed = mediaAttachment({
     fileName: "지울 사진.jpg",
@@ -1194,7 +2165,7 @@ test("diary edit replaces attachments with retained and newly uploaded IDs", asy
             error: null,
             resultType: "SUCCESS",
             success: {
-              expiresAt: "2026-07-19T12:00:00Z",
+              expiresAt: "2099-07-19T12:00:00Z",
               requiredHeaders: { "Content-Type": newFile.type },
               uploadId: newUploadId,
               uploadUrl: "https://r2.example.test/pending/edit",
@@ -1252,6 +2223,24 @@ test("diary edit replaces attachments with retained and newly uploaded IDs", asy
   assert.ok(mediaInput);
   mediaInput.files = [newFile];
   mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) =>
+        call.url === "/api/v1/media-uploads/" && call.options.method === "POST",
+    ).length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) => call.url === "https://r2.example.test/pending/edit",
+    ).length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.some((call) => call.options.method === "PATCH"),
+    false,
+  );
   const editContent = findByName(editForm, "content");
   editContent.value = "첨부를 고친 이야기";
   editForm.listeners.submit({ preventDefault() {} });
@@ -1277,6 +2266,12 @@ test("diary edit replaces attachments with retained and newly uploaded IDs", asy
   assert.doesNotMatch(rendered, /지울 사진/);
   assert.match(rendered, /남길 사진/);
   assert.match(rendered, /새 사진/);
+  assert.equal(
+    harness.fetchCalls.filter((call) =>
+      String(call.url).endsWith("/discard/"),
+    ).length,
+    0,
+  );
 });
 
 test("a confirmed update stays rendered when the following list refresh fails", async () => {
@@ -1424,6 +2419,42 @@ test("diary redirects an expired session to login with a local next path", async
     `/login/?next=${encodeURIComponent("/diary/?pageNumber=2&from=nav")}`,
   ]);
   assert.equal(harness.content.attributes["aria-busy"], "false");
+});
+
+test("concurrent background uploads redirect only once when authentication expires", async () => {
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(_url, options) {
+      if (!options.method) {
+        return Promise.resolve(jsonResponse(200, diaryPage()));
+      }
+      return Promise.resolve(
+        jsonResponse(403, {
+          error: {
+            details: [],
+            errorCode: "AUTHENTICATION_REQUIRED",
+            errorType: "AUTHENTICATION",
+            reason: "로그인이 필요합니다.",
+          },
+          resultType: "ERROR",
+          success: null,
+        }),
+      );
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [1, 2, 3, 4].map((index) => ({
+    name: `세션 만료 ${index}.jpg`,
+    size: 512,
+    type: "image/jpeg",
+  }));
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+
+  assert.deepEqual(harness.assignedLocations, [
+    `/login/?next=${encodeURIComponent("/diary/?pageNumber=1")}`,
+  ]);
 });
 
 test("diary rendering never assigns HTML strings", () => {

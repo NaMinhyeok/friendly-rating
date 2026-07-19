@@ -1,5 +1,6 @@
 const scoreThread = document.querySelector("[data-score-thread-root]");
 const MEDIA_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+let scoreThreadAuthenticationRedirectStarted = false;
 
 if (scoreThread) {
   initializeScoreThread(scoreThread);
@@ -17,7 +18,6 @@ function initializeScoreThread(root) {
   const form = root.querySelector("[data-comment-form]");
   const textarea = form?.querySelector("[name=content]");
   const submitButton = form?.querySelector("[data-comment-submit]");
-  const commentMedia = initializeCommentMedia(root, form);
   if (
     !content ||
     !status ||
@@ -39,6 +39,9 @@ function initializeScoreThread(root) {
   let requiresRefresh = false;
   let refreshAfterSubmit = false;
   let loadSequence = 0;
+  const commentMedia = initializeCommentMedia(root, form, {
+    getScoreChangeId: () => currentThread?.id,
+  });
 
   const renderCurrentThread = () => {
     if (!currentThread) {
@@ -187,7 +190,7 @@ function initializeScoreThread(root) {
         currentThread.commentCount = currentThread.comments.length;
         renderCurrentThread();
         textarea.value = "";
-        commentMedia?.clear();
+        commentMedia?.clear({ discardUploads: false });
         updateCommentCharacterCount(form);
         showCommentFormStatus(form, "댓글을 남겼어요.", "success");
       })
@@ -261,7 +264,7 @@ function initializeScoreThread(root) {
   loadThread().catch(() => undefined);
 }
 
-function initializeCommentMedia(root, form) {
+function initializeCommentMedia(root, form, { getScoreChangeId }) {
   const input = form?.querySelector("[data-comment-media-input]");
   const selection = form?.querySelector("[data-comment-media-selection]");
   const status = form?.querySelector("[data-comment-media-status]");
@@ -279,9 +282,118 @@ function initializeCommentMedia(root, form) {
     status.classList.toggle("media-status--success", state === "success");
   };
 
-  const clear = () => {
-    items.forEach((item) => revokePreviewUrl(item.previewUrl));
+  const updateSelectionStatus = () => {
+    if (items.length === 0) {
+      setStatus("");
+      return;
+    }
+    if (items.some((item) => item.uploadState === "uploading")) {
+      setStatus("첨부 파일을 올리고 있어요…");
+      return;
+    }
+    if (items.some((item) => item.uploadState === "failed")) {
+      setStatus(
+        "첨부 파일을 업로드하지 못했어요. 댓글을 남길 때 다시 시도해 주세요.",
+        "error",
+      );
+      return;
+    }
+    if (items.every((item) => item.uploadId)) {
+      setStatus("첨부 파일 업로드를 마쳤어요.", "success");
+      return;
+    }
+    setStatus(`${items.length}개 파일을 선택했어요.`);
+  };
+
+  const uploadFailureMessage = (error) => {
+    const apiError = error instanceof ApiRequestError ? error : null;
+    return apiError?.apiError?.errorCode === "CSRF_FAILED"
+      ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
+      : apiError?.apiError?.reason ||
+          "첨부 파일을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+  };
+
+  const uploadContext = (scoreChangeId = getScoreChangeId()) => {
+    if (!Number.isInteger(scoreChangeId) || scoreChangeId < 1) {
+      return null;
+    }
+    return {
+      csrfToken: getCsrfToken(form),
+      purpose: "comment",
+      scoreChangeId,
+      uploadsUrl,
+    };
+  };
+
+  const startItemUpload = (item, context) => {
+    if (item.isDiscarded) {
+      return Promise.reject(new MediaUploadCancelledError());
+    }
+    if (item.uploadId) {
+      updateUploadProgress(item, 100, "업로드 완료");
+      return Promise.resolve(item.uploadId);
+    }
+    if (item.uploadPromise) {
+      return item.uploadPromise;
+    }
+
+    item.uploadState = "uploading";
+    item.uploadContext = context;
+    updateSelectionStatus();
+    const uploadPromise = ensureMediaUploaded(item, context)
+      .then((uploadId) => {
+        item.uploadState = "uploaded";
+        return uploadId;
+      })
+      .catch((error) => {
+        if (!item.isDiscarded && !(error instanceof MediaUploadCancelledError)) {
+          markUploadFailed(item);
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (item.uploadPromise === uploadPromise) {
+          item.uploadPromise = null;
+        }
+        if (items.includes(item)) {
+          updateSelectionStatus();
+        }
+      });
+    item.uploadPromise = uploadPromise;
+    return uploadPromise;
+  };
+
+  const startBackgroundUpload = (item, context) => {
+    startItemUpload(item, context).catch((error) => {
+      if (!items.includes(item) || error instanceof MediaUploadCancelledError) {
+        return;
+      }
+      if (redirectWhenAuthenticationExpired(error)) {
+        return;
+      }
+      setStatus(uploadFailureMessage(error), "error");
+    });
+  };
+
+  const abandonItem = (item, context = item.uploadContext || uploadContext()) => {
+    item.isDiscarded = true;
+    item.uploadAbortController?.abort();
+    if (context && (item.pendingUploadId || item.uploadId)) {
+      discardInitiatedMediaUpload(item, context).catch((error) => {
+        redirectWhenAuthenticationExpired(error);
+      });
+    }
+  };
+
+  const clear = ({ discardUploads = true } = {}) => {
+    const clearedItems = items;
     items = [];
+    clearedItems.forEach((item) => {
+      revokePreviewUrl(item.previewUrl);
+      if (discardUploads) {
+        abandonItem(item);
+      }
+    });
     input.value = "";
     selection.replaceChildren();
     selection.hidden = true;
@@ -297,10 +409,9 @@ function initializeCommentMedia(root, form) {
           }
           revokePreviewUrl(item.previewUrl);
           items = items.filter((candidate) => candidate !== item);
-          setStatus(
-            items.length > 0 ? `${items.length}개 파일을 선택했어요.` : "",
-          );
+          abandonItem(item);
           render();
+          updateSelectionStatus();
         },
         removeLabel: `${item.file.name} 삭제`,
       });
@@ -325,9 +436,15 @@ function initializeCommentMedia(root, form) {
       setStatus(error, "error");
       return;
     }
-    items.push(...files.map(createUploadItem));
-    setStatus(`${items.length}개 파일을 선택했어요.`);
+    const newItems = files.map(createUploadItem);
+    items.push(...newItems);
     render();
+    const context = uploadContext();
+    if (!context) {
+      updateSelectionStatus();
+      return;
+    }
+    newItems.forEach((item) => startBackgroundUpload(item, context));
   });
 
   return {
@@ -336,7 +453,10 @@ function initializeCommentMedia(root, form) {
       return items.length > 0;
     },
     resetUploads() {
-      items.forEach(markUploadFailed);
+      items.forEach((item) => {
+        item.uploadPromise = null;
+        markUploadFailed(item);
+      });
       if (items.length > 0) {
         setStatus("첨부 파일을 다시 업로드해 주세요.", "error");
       }
@@ -351,33 +471,24 @@ function initializeCommentMedia(root, form) {
       });
     },
     async upload({ csrfToken, purpose, scoreChangeId }) {
+      const selectedItems = [...items];
       try {
-        const uploadIds = [];
-        for (let index = 0; index < items.length; index += 1) {
-          const item = items[index];
-          setStatus(`${index + 1}/${items.length} 파일을 올리고 있어요…`);
-          uploadIds.push(
-            await ensureMediaUploaded(item, {
+        const uploadIds = await Promise.all(
+          selectedItems.map((item) =>
+            startItemUpload(item, {
               csrfToken,
               purpose,
               scoreChangeId,
               uploadsUrl,
             }),
-          );
-        }
-        setStatus("첨부 파일 업로드를 마쳤어요.", "success");
-        return uploadIds;
+          ),
+        );
+        updateSelectionStatus();
+        return uploadIds.filter((_, index) =>
+          items.includes(selectedItems[index]),
+        );
       } catch (error) {
-        const failedItem = items.find((item) => !item.uploadId);
-        if (failedItem) {
-          markUploadFailed(failedItem);
-        }
-        const apiError = error instanceof ApiRequestError ? error : null;
-        const message =
-          apiError?.apiError?.errorCode === "CSRF_FAILED"
-            ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
-            : apiError?.apiError?.reason ||
-              "첨부 파일을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+        const message = uploadFailureMessage(error);
         setStatus(message, "error");
         throw new MediaUploadError(message, error);
       }
@@ -418,7 +529,15 @@ function createUploadItem(file) {
     progress: null,
     progressStatus: null,
     removeButton: null,
+    discardPromise: null,
+    discardedUploadId: null,
+    isDiscarded: false,
+    pendingUploadId: null,
+    uploadAbortController: null,
+    uploadContext: null,
     uploadId: null,
+    uploadPromise: null,
+    uploadState: "pending",
   };
 }
 
@@ -474,9 +593,16 @@ async function ensureMediaUploaded(
   item,
   { csrfToken, purpose, uploadsUrl, scoreChangeId },
 ) {
+  const uploadContext = { csrfToken, uploadsUrl };
+  if (item.isDiscarded) {
+    throw new MediaUploadCancelledError();
+  }
   if (item.uploadId) {
     updateUploadProgress(item, 100, "업로드 완료");
     return item.uploadId;
+  }
+  if (item.pendingUploadId) {
+    await discardInitiatedMediaUpload(item, uploadContext);
   }
 
   updateUploadProgress(item, 2, "업로드를 준비하고 있어요…");
@@ -500,25 +626,60 @@ async function ensureMediaUploaded(
     body: JSON.stringify(intentBody),
   });
   const intent = readUploadIntent(intentPayload);
+  item.pendingUploadId = intent.uploadId;
+  await stopIfMediaUploadDiscarded(item, uploadContext);
 
   updateUploadProgress(item, 5, "파일을 올리고 있어요…");
-  await putFileWithProgress(intent, item.file, (percentage) => {
-    updateUploadProgress(item, Math.max(5, Math.min(92, percentage)), "파일을 올리고 있어요…");
-  });
-  updateUploadProgress(item, 95, "업로드를 확인하고 있어요…");
-  const completedPayload = await requestJson(
-    mediaCompleteUrl(uploadsUrl, intent.uploadId),
-    {
-      cache: "no-store",
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken": csrfToken,
+  const uploadAbortController =
+    typeof AbortController === "function" ? new AbortController() : null;
+  item.uploadAbortController = uploadAbortController;
+  try {
+    await putFileWithProgress(
+      intent,
+      item.file,
+      (percentage) => {
+        updateUploadProgress(
+          item,
+          Math.max(5, Math.min(92, percentage)),
+          "파일을 올리고 있어요…",
+        );
       },
-      body: "{}",
-    },
-  );
+      uploadAbortController?.signal,
+    );
+  } catch (error) {
+    if (item.isDiscarded) {
+      await stopIfMediaUploadDiscarded(item, uploadContext);
+    }
+    throw error;
+  } finally {
+    if (item.uploadAbortController === uploadAbortController) {
+      item.uploadAbortController = null;
+    }
+  }
+  await stopIfMediaUploadDiscarded(item, uploadContext);
+  updateUploadProgress(item, 95, "업로드를 확인하고 있어요…");
+  let completedPayload;
+  try {
+    completedPayload = await requestJson(
+      mediaCompleteUrl(uploadsUrl, intent.uploadId),
+      {
+        cache: "no-store",
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": csrfToken,
+        },
+        body: "{}",
+      },
+    );
+  } catch (error) {
+    if (item.isDiscarded) {
+      await stopIfMediaUploadDiscarded(item, uploadContext);
+    }
+    throw error;
+  }
   readCompletedUpload(completedPayload, intent.uploadId);
+  await stopIfMediaUploadDiscarded(item, uploadContext);
   item.uploadId = intent.uploadId;
   updateUploadProgress(item, 100, "업로드 완료");
   return item.uploadId;
@@ -584,78 +745,123 @@ function mediaCompleteUrl(uploadsUrl, uploadId) {
   return `${String(uploadsUrl).replace(/\/?$/, "/")}${encodeURIComponent(String(uploadId))}/complete/`;
 }
 
-function putFileWithProgress(intent, file, onProgress) {
-  if (typeof XMLHttpRequest !== "function") {
-    onProgress(20);
-    const controller =
-      typeof AbortController === "function" ? new AbortController() : null;
-    const timeoutId =
-      controller && typeof setTimeout === "function"
-        ? setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS)
-        : null;
-    return fetch(intent.uploadUrl, {
-      method: "PUT",
-      headers: intent.requiredHeaders,
-      body: file,
-      credentials: "omit",
-      cache: "no-store",
-      ...(controller ? { signal: controller.signal } : {}),
-    })
-      .then((response) => {
-        if (!response.ok || response.redirected) {
-          throw new Error("파일 저장소가 업로드를 거부했습니다.");
-        }
-        onProgress(92);
-      })
-      .catch((error) => {
-        if (controller?.signal.aborted) {
-          throw new Error(
-            "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
-          );
-        }
-        throw error;
-      })
-      .finally(() => {
-        if (timeoutId !== null && typeof clearTimeout === "function") {
-          clearTimeout(timeoutId);
-        }
-      });
+function mediaDiscardUrl(uploadsUrl, uploadId) {
+  return `${String(uploadsUrl).replace(/\/?$/, "/")}${encodeURIComponent(String(uploadId))}/discard/`;
+}
+
+function discardInitiatedMediaUpload(item, { csrfToken, uploadsUrl }) {
+  const uploadId = item.pendingUploadId || item.uploadId;
+  if (!uploadId) {
+    return Promise.resolve();
+  }
+  if (item.discardedUploadId === uploadId) {
+    if (item.uploadId === uploadId) {
+      item.uploadId = null;
+    }
+    if (item.pendingUploadId === uploadId) {
+      item.pendingUploadId = null;
+    }
+    return Promise.resolve();
+  }
+  if (item.discardPromise?.uploadId === uploadId) {
+    return item.discardPromise.promise;
   }
 
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    request.open("PUT", intent.uploadUrl, true);
-    request.withCredentials = false;
-    request.timeout = MEDIA_UPLOAD_TIMEOUT_MS;
-    Object.entries(intent.requiredHeaders).forEach(([name, value]) => {
-      request.setRequestHeader(name, value);
-    });
-    request.upload?.addEventListener("progress", (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.round((event.loaded / event.total) * 92));
+  const promise = requestJson(mediaDiscardUrl(uploadsUrl, uploadId), {
+    cache: "no-store",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": csrfToken,
+    },
+    body: "{}",
+  })
+    .then(() => {
+      item.discardedUploadId = uploadId;
+      if (item.uploadId === uploadId) {
+        item.uploadId = null;
+      }
+      if (item.pendingUploadId === uploadId) {
+        item.pendingUploadId = null;
+      }
+    })
+    .finally(() => {
+      if (item.discardPromise?.promise === promise) {
+        item.discardPromise = null;
       }
     });
-    request.addEventListener("load", () => {
-      if (request.status >= 200 && request.status < 300) {
-        onProgress(92);
-        resolve();
-      } else {
-        reject(new Error("파일 저장소가 업로드를 거부했습니다."));
+  item.discardPromise = { promise, uploadId };
+  return promise;
+}
+
+async function stopIfMediaUploadDiscarded(item, context) {
+  if (!item.isDiscarded) {
+    return;
+  }
+  try {
+    await discardInitiatedMediaUpload(item, context);
+  } catch (error) {
+    redirectWhenAuthenticationExpired(error);
+  }
+  throw new MediaUploadCancelledError();
+}
+
+function putFileWithProgress(intent, file, onProgress, cancellationSignal = null) {
+  onProgress(20);
+  const controller =
+    typeof AbortController === "function" ? new AbortController() : null;
+  let didTimeOut = false;
+  const cancelUpload = () => controller?.abort();
+  if (cancellationSignal?.aborted) {
+    cancelUpload();
+  } else {
+    cancellationSignal?.addEventListener?.("abort", cancelUpload, {
+      once: true,
+    });
+  }
+  const timeoutId =
+    controller && typeof setTimeout === "function"
+      ? setTimeout(() => {
+          didTimeOut = true;
+          controller.abort();
+        }, MEDIA_UPLOAD_TIMEOUT_MS)
+      : null;
+  return fetch(intent.uploadUrl, {
+    method: "PUT",
+    headers: intent.requiredHeaders,
+    body: file,
+    redirect: "error",
+    credentials: "omit",
+    cache: "no-store",
+    ...(controller
+      ? { signal: controller.signal }
+      : cancellationSignal
+        ? { signal: cancellationSignal }
+        : {}),
+  })
+    .then((response) => {
+      if (!response.ok || response.redirected) {
+        throw new Error("파일 저장소가 업로드를 거부했습니다.");
+      }
+      onProgress(92);
+    })
+    .catch((error) => {
+      if (cancellationSignal?.aborted) {
+        throw new MediaUploadCancelledError();
+      }
+      if (didTimeOut) {
+        throw new Error(
+          "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
+        );
+      }
+      throw error;
+    })
+    .finally(() => {
+      cancellationSignal?.removeEventListener?.("abort", cancelUpload);
+      if (timeoutId !== null && typeof clearTimeout === "function") {
+        clearTimeout(timeoutId);
       }
     });
-    request.addEventListener("error", () => {
-      reject(new Error("파일을 올리는 중 네트워크 연결이 끊겼습니다."));
-    });
-    request.addEventListener("abort", () => {
-      reject(new Error("파일 업로드가 취소되었습니다."));
-    });
-    request.addEventListener("timeout", () => {
-      reject(
-        new Error("파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요."),
-      );
-    });
-    request.send(file);
-  });
 }
 
 function updateUploadProgress(item, value, label) {
@@ -669,6 +875,7 @@ function updateUploadProgress(item, value, label) {
 
 function markUploadFailed(item) {
   item.uploadId = null;
+  item.uploadState = "failed";
   updateUploadProgress(item, 0, "업로드 실패 · 다시 시도해 주세요");
 }
 
@@ -737,6 +944,13 @@ class MediaUploadError extends Error {
     super(message);
     this.name = "MediaUploadError";
     this.cause = cause;
+  }
+}
+
+class MediaUploadCancelledError extends Error {
+  constructor() {
+    super("파일 업로드가 취소되었습니다.");
+    this.name = "MediaUploadCancelledError";
   }
 }
 
@@ -1097,6 +1311,10 @@ function redirectWhenAuthenticationExpired(error) {
     error instanceof ApiRequestError &&
     error.apiError?.errorCode === "AUTHENTICATION_REQUIRED"
   ) {
+    if (scoreThreadAuthenticationRedirectStarted) {
+      return true;
+    }
+    scoreThreadAuthenticationRedirectStarted = true;
     const next = `${window.location.pathname}${window.location.search}`;
     window.location.assign(`/login/?next=${encodeURIComponent(next)}`);
     return true;

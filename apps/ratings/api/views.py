@@ -44,6 +44,7 @@ from ..services import (
     complete_media_upload,
     create_diary_entry,
     delete_diary_entry,
+    discard_media_upload,
     initiate_media_upload,
     register_participant_push_device,
     set_relationship_score,
@@ -77,6 +78,8 @@ from .serializers import (
     MediaForbiddenErrorEnvelopeSerializer,
     MediaUploadCompleteRequestSerializer,
     MediaUploadConflictErrorEnvelopeSerializer,
+    MediaUploadDiscardedSuccessEnvelopeSerializer,
+    MediaUploadDiscardRequestSerializer,
     MediaUploadInitiatedSuccessEnvelopeSerializer,
     MediaUploadInitiateRequestSerializer,
     MediaUploadsUnavailableErrorEnvelopeSerializer,
@@ -621,6 +624,52 @@ class MediaUploadCompleteView(APIView):
         response = Response(
             CompletedMediaUploadDataSerializer(completed.attachment).data
         )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+
+class MediaUploadDiscardView(APIView):
+    schema = ScoreChangeAutoSchema()
+
+    @extend_schema(
+        operation_id="discardMediaUpload",
+        summary="선택을 취소한 파일 업로드 폐기",
+        description=(
+            "현재 참가자가 업로드했지만 아직 점수 변경, 댓글 또는 공유 일기에 "
+            "연결하지 않은 파일을 즉시 정리합니다. 이미 폐기한 업로드를 다시 "
+            "요청하거나 존재하지 않는 업로드 ID를 요청해도 성공으로 응답합니다. "
+            "빈 JSON 객체와 CSRF 토큰을 전송해야 합니다."
+        ),
+        tags=("mediaUploads",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=MediaUploadDiscardRequestSerializer,
+        responses={
+            200: MediaUploadDiscardedSuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: MediaForbiddenErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            409: MediaUploadConflictErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+            503: MediaUploadsUnavailableErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request, upload_id: UUID) -> Response:
+        participant = _participant_for_request(request)
+        _ensure_media_uploads_available()
+        serializer = MediaUploadDiscardRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            discard_media_upload(
+                upload_id=upload_id,
+                uploader=participant,
+            )
+        except MediaUploadError as error:
+            _raise_media_upload_api_error(error)
+
+        response = Response(None)
         response.headers["Cache-Control"] = "private, no-store"
         return response
 
