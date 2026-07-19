@@ -1,4 +1,5 @@
 const scoreThread = document.querySelector("[data-score-thread-root]");
+const MEDIA_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 if (scoreThread) {
   initializeScoreThread(scoreThread);
@@ -16,6 +17,7 @@ function initializeScoreThread(root) {
   const form = root.querySelector("[data-comment-form]");
   const textarea = form?.querySelector("[name=content]");
   const submitButton = form?.querySelector("[data-comment-submit]");
+  const commentMedia = initializeCommentMedia(root, form);
   if (
     !content ||
     !status ||
@@ -84,6 +86,7 @@ function initializeScoreThread(root) {
       view.hidden = false;
       if (!isSubmitting) {
         setCommentFormDisabled(form, false);
+        commentMedia?.setDisabled(false);
         setCommentSubmitLabel(form, "댓글 남기기");
       }
     } catch (error) {
@@ -127,11 +130,11 @@ function initializeScoreThread(root) {
 
     const commentContent = textarea.value.trim();
     const contentLength = [...commentContent].length;
-    if (contentLength < 1 || contentLength > 500) {
+    if ((contentLength < 1 && !commentMedia?.hasSelection()) || contentLength > 500) {
       showCommentFormStatus(
         form,
         contentLength < 1
-          ? "댓글 내용을 입력해 주세요."
+          ? "댓글 내용이나 사진·영상을 추가해 주세요."
           : "댓글은 500자 이하로 입력해 주세요.",
         "error",
       );
@@ -147,17 +150,32 @@ function initializeScoreThread(root) {
       refreshButton.disabled = true;
     }
     setCommentFormDisabled(form, true);
+    commentMedia?.setDisabled(true);
     setCommentSubmitLabel(form, "남기고 있어요…");
     showCommentFormStatus(form, "", "");
 
-    requestJson(root.dataset.commentsUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-CSRFToken": getCsrfToken(form),
-      },
-      body: JSON.stringify({ content: commentContent }),
-    })
+    const createComment = async () => {
+      const command = { content: commentContent };
+      if (commentMedia?.hasSelection()) {
+        setCommentSubmitLabel(form, "파일을 올리고 있어요…");
+        command.mediaUploadIds = await commentMedia.upload({
+          csrfToken: getCsrfToken(form),
+          purpose: "comment",
+          scoreChangeId: currentThread?.id,
+        });
+        setCommentSubmitLabel(form, "남기고 있어요…");
+      }
+      return requestJson(root.dataset.commentsUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": getCsrfToken(form),
+        },
+        body: JSON.stringify(command),
+      });
+    };
+
+    createComment()
       .then((payload) => {
         const comment = readCreatedComment(payload);
         if (!currentThread) {
@@ -169,19 +187,29 @@ function initializeScoreThread(root) {
         currentThread.commentCount = currentThread.comments.length;
         renderCurrentThread();
         textarea.value = "";
+        commentMedia?.clear();
         updateCommentCharacterCount(form);
         showCommentFormStatus(form, "댓글을 남겼어요.", "success");
       })
       .catch((error) => {
-        if (redirectWhenAuthenticationExpired(error)) {
+        if (redirectWhenAuthenticationExpired(unwrapMediaUploadError(error))) {
           return;
         }
-        requiresRefresh = showCommentApiError(form, error);
+        if (error instanceof MediaUploadError) {
+          requiresRefresh = false;
+          showCommentFormStatus(form, error.message, "error");
+        } else {
+          if (shouldResetMediaUploads(error)) {
+            commentMedia?.resetUploads();
+          }
+          requiresRefresh = showCommentApiError(form, error);
+        }
       })
       .finally(() => {
         isSubmitting = false;
         form.setAttribute("aria-busy", "false");
         setCommentFormDisabled(form, requiresRefresh || !currentThread);
+        commentMedia?.setDisabled(requiresRefresh || !currentThread);
         setCommentSubmitLabel(
           form,
           requiresRefresh ? "새로고침 후 확인" : "댓글 남기기",
@@ -233,6 +261,443 @@ function initializeScoreThread(root) {
   loadThread().catch(() => undefined);
 }
 
+function initializeCommentMedia(root, form) {
+  const input = form?.querySelector("[data-comment-media-input]");
+  const selection = form?.querySelector("[data-comment-media-selection]");
+  const status = form?.querySelector("[data-comment-media-status]");
+  const uploadsUrl = root.dataset.mediaUploadsUrl;
+  if (!input || !selection || !status || !uploadsUrl) {
+    return null;
+  }
+
+  let items = [];
+  let isDisabled = true;
+
+  const setStatus = (message, state = "") => {
+    status.textContent = message;
+    status.classList.toggle("media-status--error", state === "error");
+    status.classList.toggle("media-status--success", state === "success");
+  };
+
+  const clear = () => {
+    items.forEach((item) => revokePreviewUrl(item.previewUrl));
+    items = [];
+    input.value = "";
+    selection.replaceChildren();
+    selection.hidden = true;
+    setStatus("");
+  };
+
+  const render = () => {
+    const previews = items.map((item) => {
+      const preview = createUploadPreview(item, {
+        onRemove: () => {
+          if (isDisabled) {
+            return;
+          }
+          revokePreviewUrl(item.previewUrl);
+          items = items.filter((candidate) => candidate !== item);
+          setStatus(
+            items.length > 0 ? `${items.length}개 파일을 선택했어요.` : "",
+          );
+          render();
+        },
+        removeLabel: `${item.file.name} 삭제`,
+      });
+      item.removeButton = preview.removeButton;
+      item.progress = preview.progress;
+      item.progressStatus = preview.progressStatus;
+      item.removeButton.disabled = isDisabled;
+      return preview.element;
+    });
+    selection.replaceChildren(...previews);
+    selection.hidden = previews.length === 0;
+  };
+
+  input.addEventListener("change", () => {
+    const files = Array.from(input.files || []);
+    input.value = "";
+    if (files.length === 0) {
+      return;
+    }
+    const error = validateCommentFiles([...items.map((item) => item.file), ...files]);
+    if (error) {
+      setStatus(error, "error");
+      return;
+    }
+    items.push(...files.map(createUploadItem));
+    setStatus(`${items.length}개 파일을 선택했어요.`);
+    render();
+  });
+
+  return {
+    clear,
+    hasSelection() {
+      return items.length > 0;
+    },
+    resetUploads() {
+      items.forEach(markUploadFailed);
+      if (items.length > 0) {
+        setStatus("첨부 파일을 다시 업로드해 주세요.", "error");
+      }
+    },
+    setDisabled(disabled) {
+      isDisabled = disabled;
+      input.disabled = disabled;
+      items.forEach((item) => {
+        if (item.removeButton) {
+          item.removeButton.disabled = disabled;
+        }
+      });
+    },
+    async upload({ csrfToken, purpose, scoreChangeId }) {
+      try {
+        const uploadIds = [];
+        for (let index = 0; index < items.length; index += 1) {
+          const item = items[index];
+          setStatus(`${index + 1}/${items.length} 파일을 올리고 있어요…`);
+          uploadIds.push(
+            await ensureMediaUploaded(item, {
+              csrfToken,
+              purpose,
+              scoreChangeId,
+              uploadsUrl,
+            }),
+          );
+        }
+        setStatus("첨부 파일 업로드를 마쳤어요.", "success");
+        return uploadIds;
+      } catch (error) {
+        const failedItem = items.find((item) => !item.uploadId);
+        if (failedItem) {
+          markUploadFailed(failedItem);
+        }
+        const apiError = error instanceof ApiRequestError ? error : null;
+        const message =
+          apiError?.apiError?.errorCode === "CSRF_FAILED"
+            ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
+            : apiError?.apiError?.reason ||
+              "첨부 파일을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+        setStatus(message, "error");
+        throw new MediaUploadError(message, error);
+      }
+    },
+  };
+}
+
+function validateCommentFiles(files) {
+  const imageTypes = ["image/jpeg", "image/png", "image/webp"];
+  const videoTypes = ["video/mp4", "video/webm", "video/quicktime"];
+  for (const file of files) {
+    if (!imageTypes.includes(file.type) && !videoTypes.includes(file.type)) {
+      return "JPG, PNG, WebP 사진이나 MP4, WebM, MOV 영상을 선택해 주세요.";
+    }
+    const maximumBytes = videoTypes.includes(file.type)
+      ? 100 * 1024 * 1024
+      : 10 * 1024 * 1024;
+    if (!Number.isFinite(file.size) || file.size < 1 || file.size > maximumBytes) {
+      return videoTypes.includes(file.type)
+        ? "영상은 100MB 이하의 파일만 올릴 수 있어요."
+        : "사진은 한 장당 10MB 이하의 파일만 올릴 수 있어요.";
+    }
+  }
+  const videos = files.filter((file) => videoTypes.includes(file.type));
+  if (videos.length > 0 && (videos.length > 1 || files.length > 1)) {
+    return "사진과 영상은 함께 올릴 수 없고, 영상은 한 개만 선택할 수 있어요.";
+  }
+  if (videos.length === 0 && files.length > 4) {
+    return "사진은 한 댓글에 최대 4장까지 올릴 수 있어요.";
+  }
+  return "";
+}
+
+function createUploadItem(file) {
+  return {
+    file,
+    previewUrl: createPreviewUrl(file),
+    progress: null,
+    progressStatus: null,
+    removeButton: null,
+    uploadId: null,
+  };
+}
+
+function createUploadPreview(item, { onRemove, removeLabel }) {
+  const card = document.createElement("article");
+  card.className = "media-preview-card";
+  let visual;
+  if (item.file.type.startsWith("video/")) {
+    visual = document.createElement("video");
+    visual.autoplay = false;
+    visual.controls = true;
+    visual.playsInline = true;
+    visual.preload = "metadata";
+    visual.setAttribute("aria-label", `선택한 영상: ${item.file.name}`);
+  } else {
+    visual = document.createElement("img");
+    visual.alt = `선택한 사진: ${item.file.name}`;
+    visual.decoding = "async";
+  }
+  visual.className = "media-preview-card__visual";
+  if (item.previewUrl) {
+    visual.src = item.previewUrl;
+  }
+
+  const details = document.createElement("div");
+  details.className = "media-preview-card__details";
+  const name = document.createElement("strong");
+  name.textContent = item.file.name;
+  const size = document.createElement("span");
+  size.textContent = formatFileSize(item.file.size);
+  const progress = document.createElement("progress");
+  progress.className = "media-upload-progress";
+  progress.max = 100;
+  progress.value = item.uploadId ? 100 : 0;
+  progress.setAttribute("aria-label", `${item.file.name} 업로드 진행률`);
+  const progressStatus = document.createElement("span");
+  progressStatus.className = "media-upload-progress__label";
+  progressStatus.textContent = item.uploadId ? "업로드 완료" : "업로드 전";
+  details.append(name, size, progress, progressStatus);
+
+  const removeButton = document.createElement("button");
+  removeButton.className = "media-remove-button";
+  removeButton.type = "button";
+  removeButton.setAttribute("aria-label", removeLabel);
+  removeButton.textContent = "삭제";
+  removeButton.addEventListener("click", onRemove);
+
+  card.append(visual, details, removeButton);
+  return { element: card, progress, progressStatus, removeButton };
+}
+
+async function ensureMediaUploaded(
+  item,
+  { csrfToken, purpose, uploadsUrl, scoreChangeId },
+) {
+  if (item.uploadId) {
+    updateUploadProgress(item, 100, "업로드 완료");
+    return item.uploadId;
+  }
+
+  updateUploadProgress(item, 2, "업로드를 준비하고 있어요…");
+  const intentBody = {
+    purpose,
+    kind: item.file.type.startsWith("video/") ? "video" : "image",
+    fileName: item.file.name,
+    contentType: item.file.type,
+    byteSize: item.file.size,
+  };
+  if (Number.isInteger(scoreChangeId) && scoreChangeId > 0) {
+    intentBody.scoreChangeId = scoreChangeId;
+  }
+  const intentPayload = await requestJson(uploadsUrl, {
+    cache: "no-store",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": csrfToken,
+    },
+    body: JSON.stringify(intentBody),
+  });
+  const intent = readUploadIntent(intentPayload);
+
+  updateUploadProgress(item, 5, "파일을 올리고 있어요…");
+  await putFileWithProgress(intent, item.file, (percentage) => {
+    updateUploadProgress(item, Math.max(5, Math.min(92, percentage)), "파일을 올리고 있어요…");
+  });
+  updateUploadProgress(item, 95, "업로드를 확인하고 있어요…");
+  const completedPayload = await requestJson(
+    mediaCompleteUrl(uploadsUrl, intent.uploadId),
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": csrfToken,
+      },
+      body: "{}",
+    },
+  );
+  readCompletedUpload(completedPayload, intent.uploadId);
+  item.uploadId = intent.uploadId;
+  updateUploadProgress(item, 100, "업로드 완료");
+  return item.uploadId;
+}
+
+function readUploadIntent(payload) {
+  const intent = payload?.success;
+  const headerEntries =
+    intent?.requiredHeaders && typeof intent.requiredHeaders === "object"
+      ? Object.entries(intent.requiredHeaders)
+      : null;
+  if (
+    !intent ||
+    !isUploadId(intent.uploadId) ||
+    typeof intent.uploadUrl !== "string" ||
+    !isHttpUrl(intent.uploadUrl) ||
+    !headerEntries ||
+    headerEntries.some(
+      ([name, value]) =>
+        typeof name !== "string" || !name || typeof value !== "string",
+    ) ||
+    typeof intent.expiresAt !== "string" ||
+    Number.isNaN(Date.parse(intent.expiresAt))
+  ) {
+    throw new Error("업로드 준비 응답 형식이 올바르지 않습니다.");
+  }
+  return intent;
+}
+
+function readCompletedUpload(payload, uploadId) {
+  const completed = payload?.success;
+  if (
+    !completed ||
+    String(completed.id) !== String(uploadId) ||
+    !["image", "video"].includes(completed.kind) ||
+    typeof completed.fileName !== "string" ||
+    typeof completed.contentType !== "string" ||
+    !Number.isInteger(completed.byteSize) ||
+    completed.byteSize <= 0
+  ) {
+    throw new Error("업로드 완료 응답 형식이 올바르지 않습니다.");
+  }
+  return completed;
+}
+
+function isUploadId(value) {
+  return (
+    (typeof value === "string" && value.length > 0 && value.length <= 200) ||
+    (Number.isInteger(value) && value > 0)
+  );
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function mediaCompleteUrl(uploadsUrl, uploadId) {
+  return `${String(uploadsUrl).replace(/\/?$/, "/")}${encodeURIComponent(String(uploadId))}/complete/`;
+}
+
+function putFileWithProgress(intent, file, onProgress) {
+  if (typeof XMLHttpRequest !== "function") {
+    onProgress(20);
+    const controller =
+      typeof AbortController === "function" ? new AbortController() : null;
+    const timeoutId =
+      controller && typeof setTimeout === "function"
+        ? setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS)
+        : null;
+    return fetch(intent.uploadUrl, {
+      method: "PUT",
+      headers: intent.requiredHeaders,
+      body: file,
+      credentials: "omit",
+      cache: "no-store",
+      ...(controller ? { signal: controller.signal } : {}),
+    })
+      .then((response) => {
+        if (!response.ok || response.redirected) {
+          throw new Error("파일 저장소가 업로드를 거부했습니다.");
+        }
+        onProgress(92);
+      })
+      .catch((error) => {
+        if (controller?.signal.aborted) {
+          throw new Error(
+            "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
+          );
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (timeoutId !== null && typeof clearTimeout === "function") {
+          clearTimeout(timeoutId);
+        }
+      });
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", intent.uploadUrl, true);
+    request.withCredentials = false;
+    request.timeout = MEDIA_UPLOAD_TIMEOUT_MS;
+    Object.entries(intent.requiredHeaders).forEach(([name, value]) => {
+      request.setRequestHeader(name, value);
+    });
+    request.upload?.addEventListener("progress", (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.round((event.loaded / event.total) * 92));
+      }
+    });
+    request.addEventListener("load", () => {
+      if (request.status >= 200 && request.status < 300) {
+        onProgress(92);
+        resolve();
+      } else {
+        reject(new Error("파일 저장소가 업로드를 거부했습니다."));
+      }
+    });
+    request.addEventListener("error", () => {
+      reject(new Error("파일을 올리는 중 네트워크 연결이 끊겼습니다."));
+    });
+    request.addEventListener("abort", () => {
+      reject(new Error("파일 업로드가 취소되었습니다."));
+    });
+    request.addEventListener("timeout", () => {
+      reject(
+        new Error("파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요."),
+      );
+    });
+    request.send(file);
+  });
+}
+
+function updateUploadProgress(item, value, label) {
+  if (item.progress) {
+    item.progress.value = value;
+  }
+  if (item.progressStatus) {
+    item.progressStatus.textContent = label;
+  }
+}
+
+function markUploadFailed(item) {
+  item.uploadId = null;
+  updateUploadProgress(item, 0, "업로드 실패 · 다시 시도해 주세요");
+}
+
+function createPreviewUrl(file) {
+  try {
+    return typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : "";
+  } catch {
+    return "";
+  }
+}
+
+function revokePreviewUrl(url) {
+  if (!url) {
+    return;
+  }
+  try {
+    URL.revokeObjectURL?.(url);
+  } catch {
+    return;
+  }
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
 async function requestJson(url, options = {}) {
   const response = await fetch(url, {
     credentials: "same-origin",
@@ -265,6 +730,27 @@ class ApiRequestError extends Error {
     this.status = status;
     this.apiError = apiError;
   }
+}
+
+class MediaUploadError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = "MediaUploadError";
+    this.cause = cause;
+  }
+}
+
+function unwrapMediaUploadError(error) {
+  return error instanceof MediaUploadError ? error.cause : error;
+}
+
+function shouldResetMediaUploads(error) {
+  return (
+    error instanceof ApiRequestError &&
+    ["MEDIA_UPLOAD_CONFLICT", "NOT_FOUND", "PERMISSION_DENIED"].includes(
+      error.apiError?.errorCode,
+    )
+  );
 }
 
 function readScoreThread(payload) {
@@ -307,25 +793,76 @@ function isScoreChange(change) {
     Number.isInteger(change.commentCount) &&
     change.commentCount >= 0 &&
     typeof change.threadUrl === "string" &&
-    /^\/history\/[1-9]\d*\/$/.test(change.threadUrl)
+    /^\/history\/[1-9]\d*\/$/.test(change.threadUrl) &&
+    validateAttachmentList(change.attachments, "scoreChange")
   );
 }
 
 function validateComment(comment) {
+  const contentLength =
+    typeof comment?.content === "string" ? [...comment.content].length : -1;
   if (
     !comment ||
     !Number.isInteger(comment.id) ||
     comment.id < 1 ||
     !isParticipantSummary(comment.author) ||
-    typeof comment.content !== "string" ||
-    [...comment.content].length < 1 ||
-    [...comment.content].length > 500 ||
+    contentLength < 0 ||
+    contentLength > 500 ||
     typeof comment.createdAt !== "string" ||
     Number.isNaN(Date.parse(comment.createdAt)) ||
-    typeof comment.isMine !== "boolean"
+    typeof comment.isMine !== "boolean" ||
+    !validateAttachmentList(comment.attachments, "comment") ||
+    (contentLength === 0 && attachmentItems(comment).length === 0)
   ) {
     throw new Error("댓글 응답 형식이 올바르지 않습니다.");
   }
+}
+
+function validateAttachmentList(value, owner) {
+  if (value === undefined) {
+    return true;
+  }
+  if (!Array.isArray(value) || !value.every(validateAttachment)) {
+    return false;
+  }
+  const imageCount = value.filter((attachment) => attachment.kind === "image").length;
+  const videoCount = value.filter((attachment) => attachment.kind === "video").length;
+  if (owner === "scoreChange") {
+    return value.length <= 1 && videoCount === 0;
+  }
+  return (
+    (videoCount === 0 && imageCount <= 4) ||
+    (videoCount === 1 && imageCount === 0 && value.length === 1)
+  );
+}
+
+function validateAttachment(attachment) {
+  const validId =
+    (Number.isInteger(attachment?.id) && attachment.id > 0) ||
+    (typeof attachment?.id === "string" && attachment.id.length > 0);
+  const maximumBytes = attachment?.kind === "video" ? 100 * 1024 * 1024 : 10 * 1024 * 1024;
+  return (
+    validId &&
+    ["image", "video"].includes(attachment.kind) &&
+    typeof attachment.fileName === "string" &&
+    [...attachment.fileName].length > 0 &&
+    [...attachment.fileName].length <= 255 &&
+    typeof attachment.contentType === "string" &&
+    (attachment.kind === "image"
+      ? ["image/jpeg", "image/png", "image/webp"].includes(attachment.contentType)
+      : ["video/mp4", "video/webm", "video/quicktime"].includes(
+          attachment.contentType,
+        )) &&
+    Number.isInteger(attachment.byteSize) &&
+    attachment.byteSize > 0 &&
+    attachment.byteSize <= maximumBytes &&
+    typeof attachment.contentUrl === "string" &&
+    isHttpUrl(attachment.contentUrl)
+  );
+}
+
+function attachmentItems(owner) {
+  return Array.isArray(owner?.attachments) ? owner.attachments : [];
 }
 
 function isParticipantSummary(participant) {
@@ -361,6 +898,13 @@ function renderScoreChange(root, change) {
     children.push(reason);
   }
 
+  const attachments = createAttachmentGallery(attachmentItems(change), {
+    label: "점수 변경에 첨부된 파일",
+  });
+  if (attachments) {
+    children.push(attachments);
+  }
+
   const footer = document.createElement("footer");
   const changedBy = document.createElement("span");
   changedBy.textContent = `변경자 ${change.changedBy.displayName}`;
@@ -390,11 +934,73 @@ function createCommentItem(comment) {
   time.dateTime = comment.createdAt;
   time.textContent = formatCreatedAt(comment.createdAt);
   header.append(author, time);
-  const body = document.createElement("p");
-  body.textContent = comment.content;
-  article.append(header, body);
+  article.append(header);
+  if (comment.content) {
+    const body = document.createElement("p");
+    body.textContent = comment.content;
+    article.append(body);
+  }
+  const attachments = createAttachmentGallery(attachmentItems(comment), {
+    label: "댓글에 첨부된 파일",
+  });
+  if (attachments) {
+    article.append(attachments);
+  }
   item.append(article);
   return item;
+}
+
+function createAttachmentGallery(attachments, { label }) {
+  if (attachments.length === 0) {
+    return null;
+  }
+  const gallery = document.createElement("div");
+  gallery.className = `attachment-gallery${attachments.length === 1 ? " attachment-gallery--single" : ""}`;
+  gallery.setAttribute("aria-label", label);
+  attachments.forEach((attachment) => {
+    gallery.append(createAttachment(attachment));
+  });
+  return gallery;
+}
+
+function createAttachment(attachment) {
+  const container = document.createElement("figure");
+  container.className = `attachment attachment--${attachment.kind}`;
+  const contentUrl = new URL(
+    attachment.contentUrl,
+    window.location.origin,
+  ).href;
+  let media;
+  if (attachment.kind === "image") {
+    media = document.createElement("img");
+    media.alt = attachment.fileName;
+    media.loading = "lazy";
+    media.decoding = "async";
+  } else {
+    media = document.createElement("video");
+    media.autoplay = false;
+    media.controls = true;
+    media.playsInline = true;
+    media.preload = "metadata";
+    media.setAttribute("aria-label", attachment.fileName);
+    const fallback = document.createElement("a");
+    fallback.href = contentUrl;
+    fallback.textContent = "영상을 재생할 수 없으면 다운로드해 주세요.";
+    media.append(fallback);
+  }
+  media.src = contentUrl;
+  media.referrerPolicy = "no-referrer";
+
+  const caption = document.createElement("figcaption");
+  const download = document.createElement("a");
+  download.className = "attachment-download";
+  download.href = contentUrl;
+  download.download = attachment.fileName;
+  download.referrerPolicy = "no-referrer";
+  download.textContent = `${attachment.fileName} 다운로드`;
+  caption.append(download);
+  container.append(media, caption);
+  return container;
 }
 
 function formatCreatedAt(value) {

@@ -13,7 +13,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from ..api.serializers import ScoreChangeThreadDataSerializer
-from ..models import ScoreChange, ScoreChangeComment
+from ..models import MediaAttachment, ScoreChange, ScoreChangeComment
 from .http_helpers import csrf_token_from_form
 
 pytestmark = pytest.mark.django_db
@@ -160,6 +160,7 @@ def test_participant_reads_score_change_thread_in_comment_time_order(
                 "score-change-thread",
                 kwargs={"score_change_id": change.pk},
             ),
+            "attachments": [],
             "comments": [
                 {
                     "id": earlier_comment.pk,
@@ -170,6 +171,7 @@ def test_participant_reads_score_change_thread_in_comment_time_order(
                     "content": "먼저 댓글",
                     "createdAt": body["success"]["comments"][0]["createdAt"],
                     "isMine": True,
+                    "attachments": [],
                 },
                 {
                     "id": later_comment.pk,
@@ -180,6 +182,7 @@ def test_participant_reads_score_change_thread_in_comment_time_order(
                     "content": "나중 댓글",
                     "createdAt": body["success"]["comments"][1]["createdAt"],
                     "isMine": False,
+                    "attachments": [],
                 },
             ],
         },
@@ -267,6 +270,7 @@ def test_comment_author_comes_from_session_and_notification_waits_for_commit(
             "content": "이야기해 보자",
             "createdAt": response.json()["success"]["createdAt"],
             "isMine": True,
+            "attachments": [],
         },
     }
     assert parse_datetime(response.json()["success"]["createdAt"]) == (
@@ -297,6 +301,66 @@ def test_comment_accepts_exactly_five_hundred_characters(participant_pair):
     assert comment.content == content
 
 
+def test_comment_accepts_a_media_only_payload(participant_pair, settings):
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    change = _create_change(participant_pair)
+    now = timezone.now()
+    attachment = MediaAttachment.objects.create(
+        uploader=participant_pair.second,
+        score_change=change,
+        purpose=MediaAttachment.Purpose.COMMENT,
+        kind=MediaAttachment.Kind.IMAGE,
+        status=MediaAttachment.Status.READY,
+        object_key="media/comment-only",
+        original_name="말대신사진.jpg",
+        content_type="image/jpeg",
+        expected_size=512,
+        actual_size=512,
+        etag="comment-only-etag",
+        expires_at=now + timedelta(minutes=10),
+        finalized_at=now,
+    )
+    client, csrf_token = _participant_client(participant_pair.second)
+
+    response = _post_comment(
+        client,
+        change,
+        {"mediaUploadIds": [str(attachment.pk)]},
+        csrf_token=csrf_token,
+    )
+
+    comment = ScoreChangeComment.objects.get()
+    attachment.refresh_from_db()
+    assert response.status_code == 201
+    assert response.json()["success"] == {
+        "id": comment.pk,
+        "author": {
+            "slot": 2,
+            "displayName": "두 번째",
+        },
+        "content": "",
+        "createdAt": response.json()["success"]["createdAt"],
+        "isMine": True,
+        "attachments": [
+            {
+                "id": str(attachment.pk),
+                "kind": "image",
+                "fileName": "말대신사진.jpg",
+                "contentType": "image/jpeg",
+                "byteSize": 512,
+                "contentUrl": reverse(
+                    "media-content",
+                    kwargs={"attachment_id": attachment.pk},
+                ),
+            }
+        ],
+    }
+    assert comment.content == ""
+    assert comment.media_count == 1
+    assert attachment.comment == comment
+    assert attachment.status == MediaAttachment.Status.ATTACHED
+
+
 @pytest.mark.parametrize(
     ("payload", "expected_field", "expected_code"),
     (
@@ -313,7 +377,7 @@ def test_comment_accepts_exactly_five_hundred_characters(participant_pair):
         ),
     ),
 )
-def test_comment_strictly_validates_content_without_writing(
+def test_comment_requires_content_or_media_and_strictly_validates_payload_without_writing(
     participant_pair,
     payload,
     expected_field,

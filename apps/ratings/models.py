@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -153,7 +155,8 @@ class ScoreChangeComment(models.Model):
         on_delete=models.PROTECT,
         related_name="score_change_comments",
     )
-    content = models.CharField(max_length=500)
+    content = models.CharField(max_length=500, blank=True)
+    media_count = models.PositiveSmallIntegerField(default=0, db_default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -161,8 +164,12 @@ class ScoreChangeComment(models.Model):
         ordering = ("created_at", "pk")
         constraints = [
             models.CheckConstraint(
-                condition=~Q(content=""),
-                name="score_change_comment_content_not_empty",
+                condition=~Q(content="") | Q(media_count__gt=0),
+                name="score_comment_has_content_or_media",
+            ),
+            models.CheckConstraint(
+                condition=Q(media_count__lte=4),
+                name="score_comment_media_count_at_most_4",
             ),
         ]
         indexes = [
@@ -174,3 +181,175 @@ class ScoreChangeComment(models.Model):
 
     def __str__(self):
         return f"{self.author}: {self.content[:30]}"
+
+
+class MediaAttachment(models.Model):
+    class Purpose(models.TextChoices):
+        SCORE_CHANGE = "score_change", "점수 변경"
+        COMMENT = "comment", "댓글"
+
+    class Kind(models.TextChoices):
+        IMAGE = "image", "이미지"
+        VIDEO = "video", "영상"
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "업로드 대기"
+        FINALIZING = "finalizing", "업로드 확인 중"
+        RECLAIMING = "reclaiming", "이전 확인 작업 정리 중"
+        READY = "ready", "연결 대기"
+        DELETING = "deleting", "만료 업로드 삭제 중"
+        ATTACHED = "attached", "연결 완료"
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    uploader = models.ForeignKey(
+        Participant,
+        on_delete=models.PROTECT,
+        related_name="media_attachments",
+    )
+    score_change = models.ForeignKey(
+        ScoreChange,
+        on_delete=models.PROTECT,
+        related_name="media_attachments",
+        null=True,
+        blank=True,
+    )
+    comment = models.ForeignKey(
+        ScoreChangeComment,
+        on_delete=models.PROTECT,
+        related_name="media_attachments",
+        null=True,
+        blank=True,
+    )
+    purpose = models.CharField(max_length=20, choices=Purpose)
+    kind = models.CharField(max_length=10, choices=Kind)
+    status = models.CharField(
+        max_length=12,
+        choices=Status,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    object_key = models.CharField(max_length=255, unique=True)
+    original_name = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=100)
+    expected_size = models.PositiveBigIntegerField()
+    actual_size = models.PositiveBigIntegerField(null=True, blank=True)
+    etag = models.CharField(max_length=255, blank=True)
+    expires_at = models.DateTimeField(db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    finalized_at = models.DateTimeField(null=True, blank=True)
+    finalization_token = models.UUIDField(null=True, blank=True)
+    position = models.PositiveSmallIntegerField(default=0)
+
+    class Meta:
+        db_table = "media_attachment"
+        ordering = ("position", "created_at", "pk")
+        constraints = [
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        purpose="score_change",
+                        kind="image",
+                        expected_size__gte=1,
+                        expected_size__lte=10 * 1024 * 1024,
+                    )
+                    | Q(
+                        purpose="comment",
+                        kind="image",
+                        expected_size__gte=1,
+                        expected_size__lte=10 * 1024 * 1024,
+                    )
+                    | Q(
+                        purpose="comment",
+                        kind="video",
+                        expected_size__gte=1,
+                        expected_size__lte=100 * 1024 * 1024,
+                    )
+                ),
+                name="media_attachment_purpose_kind_size_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(purpose="score_change", comment__isnull=True)
+                    | Q(purpose="comment", score_change__isnull=False)
+                ),
+                name="media_attachment_pending_parent_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        status="attached",
+                        score_change__isnull=False,
+                        purpose="score_change",
+                        comment__isnull=True,
+                    )
+                    | Q(
+                        status="attached",
+                        score_change__isnull=False,
+                        purpose="comment",
+                        comment__isnull=False,
+                    )
+                    | Q(
+                        status__in=(
+                            "pending",
+                            "finalizing",
+                            "reclaiming",
+                            "ready",
+                            "deleting",
+                        ),
+                        purpose="score_change",
+                        score_change__isnull=True,
+                        comment__isnull=True,
+                    )
+                    | Q(
+                        status__in=(
+                            "pending",
+                            "finalizing",
+                            "reclaiming",
+                            "ready",
+                            "deleting",
+                        ),
+                        purpose="comment",
+                        score_change__isnull=False,
+                        comment__isnull=True,
+                    )
+                ),
+                name="media_attachment_status_parent_valid",
+            ),
+            models.CheckConstraint(
+                condition=(
+                    Q(
+                        status="pending",
+                        actual_size__isnull=True,
+                        finalized_at__isnull=True,
+                        finalization_token__isnull=True,
+                    )
+                    | Q(
+                        status__in=("finalizing", "reclaiming"),
+                        actual_size__isnull=True,
+                        finalized_at__isnull=True,
+                        finalization_token__isnull=False,
+                    )
+                    | Q(
+                        status__in=("ready", "attached"),
+                        actual_size__isnull=False,
+                        finalized_at__isnull=False,
+                        finalization_token__isnull=True,
+                    )
+                    | Q(
+                        status="deleting",
+                        actual_size__isnull=True,
+                        finalized_at__isnull=True,
+                    )
+                    | Q(
+                        status="deleting",
+                        actual_size__isnull=False,
+                        finalized_at__isnull=False,
+                        finalization_token__isnull=True,
+                    )
+                ),
+                name="media_attachment_finalization_metadata_valid",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.original_name} ({self.get_status_display()})"

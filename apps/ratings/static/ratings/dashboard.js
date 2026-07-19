@@ -1,4 +1,5 @@
 const dashboard = document.querySelector("[data-dashboard-root]");
+const MEDIA_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 
 if (dashboard) {
   initializeDashboard(dashboard);
@@ -8,6 +9,7 @@ function initializeDashboard(root) {
   const scoreList = root.querySelector("[data-score-list]");
   const form = root.querySelector("[data-score-change-form]");
   const submitButton = root.querySelector("[data-score-submit]");
+  const scoreMedia = initializeScoreMedia(root, form);
   let isSubmitting = false;
   let scoreLoadSequence = 0;
   let ownCurrentScore = null;
@@ -101,9 +103,19 @@ function initializeDashboard(root) {
     form.setAttribute("aria-busy", "true");
     submitButton.disabled = true;
     setFormFieldsDisabled(form, true);
+    scoreMedia?.setDisabled(true);
     setSubmitLabel(form, "기록하고 있어요…");
 
     try {
+      if (scoreMedia?.hasSelection()) {
+        setSubmitLabel(form, "사진을 올리고 있어요…");
+        const mediaUploadIds = await scoreMedia.upload({
+          csrfToken: getCsrfToken(form),
+          purpose: "scoreChange",
+        });
+        command.mediaUploadIds = mediaUploadIds;
+        setSubmitLabel(form, "기록하고 있어요…");
+      }
       const payload = await requestJson(root.dataset.scoreChangesUrl, {
         method: "POST",
         headers: {
@@ -131,24 +143,32 @@ function initializeDashboard(root) {
       }
       form.querySelector("[name=amount]").value = "";
       form.querySelector("[name=reason]").value = "";
+      scoreMedia?.clear();
       updateCharacterCount(form);
       updateScorePreview(form, ownCurrentScore, selectedOperation);
       await loadScores();
     } catch (error) {
-      if (redirectWhenAuthenticationExpired(error)) {
+      if (redirectWhenAuthenticationExpired(unwrapMediaUploadError(error))) {
         return;
       }
-      if (isScoreUnchangedError(error)) {
+      if (error instanceof MediaUploadError) {
+        showFormStatus(form, error.message, "error");
+        shouldUnlockSubmission = true;
+      } else if (isScoreUnchangedError(error)) {
         showScoreToast(form, error.message, "warning");
         form.querySelector("[name=amount]").value = "";
         await loadScores();
       } else {
+        if (shouldResetMediaUploads(error)) {
+          scoreMedia?.resetUploads();
+        }
         shouldUnlockSubmission = !showApiFormError(form, error);
       }
     } finally {
       isSubmitting = false;
       form.setAttribute("aria-busy", "false");
       setFormFieldsDisabled(form, false);
+      scoreMedia?.setDisabled(false);
       submitButton.disabled = !shouldUnlockSubmission;
       setSubmitLabel(
         form,
@@ -172,6 +192,404 @@ function initializeDashboard(root) {
   });
 
   loadScores().catch(() => undefined);
+}
+
+function initializeScoreMedia(root, form) {
+  const input = form?.querySelector("[data-score-media-input]");
+  const selection = form?.querySelector("[data-score-media-selection]");
+  const status = form?.querySelector("[data-score-media-status]");
+  const uploadsUrl = root.dataset.mediaUploadsUrl;
+  if (!input || !selection || !status || !uploadsUrl) {
+    return null;
+  }
+
+  let item = null;
+  let isDisabled = false;
+
+  const setStatus = (message, state = "") => {
+    status.textContent = message;
+    status.classList.toggle("media-status--error", state === "error");
+    status.classList.toggle("media-status--success", state === "success");
+  };
+
+  const clear = () => {
+    revokePreviewUrl(item?.previewUrl);
+    item = null;
+    input.value = "";
+    selection.replaceChildren();
+    selection.hidden = true;
+    setStatus("");
+  };
+
+  const render = () => {
+    if (!item) {
+      selection.replaceChildren();
+      selection.hidden = true;
+      return;
+    }
+    const preview = createUploadPreview(item, {
+      onRemove: clear,
+      removeLabel: "선택한 사진 삭제",
+    });
+    item.removeButton = preview.removeButton;
+    item.progress = preview.progress;
+    item.progressStatus = preview.progressStatus;
+    item.removeButton.disabled = isDisabled;
+    selection.replaceChildren(preview.element);
+    selection.hidden = false;
+  };
+
+  input.addEventListener("change", () => {
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file) {
+      return;
+    }
+    const error = validateUploadFile(file, {
+      allowedTypes: ["image/jpeg", "image/png", "image/webp"],
+      maximumBytes: 10 * 1024 * 1024,
+    });
+    if (error) {
+      setStatus(error, "error");
+      return;
+    }
+    revokePreviewUrl(item?.previewUrl);
+    item = createUploadItem(file);
+    setStatus("사진을 선택했어요.");
+    render();
+  });
+
+  return {
+    clear,
+    hasSelection() {
+      return Boolean(item);
+    },
+    resetUploads() {
+      if (item) {
+        markUploadFailed(item);
+        setStatus("사진을 다시 업로드해 주세요.", "error");
+      }
+    },
+    setDisabled(disabled) {
+      isDisabled = disabled;
+      input.disabled = disabled;
+      if (item?.removeButton) {
+        item.removeButton.disabled = disabled;
+      }
+    },
+    async upload({ csrfToken, purpose }) {
+      if (!item) {
+        return [];
+      }
+      try {
+        const uploadId = await ensureMediaUploaded(item, {
+          csrfToken,
+          purpose,
+          uploadsUrl,
+        });
+        setStatus("사진 업로드를 마쳤어요.", "success");
+        return [uploadId];
+      } catch (error) {
+        markUploadFailed(item);
+        const apiError = error instanceof ApiRequestError ? error : null;
+        const message =
+          apiError?.apiError?.errorCode === "CSRF_FAILED"
+            ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
+            : apiError?.apiError?.reason ||
+              "사진을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+        setStatus(message, "error");
+        throw new MediaUploadError(message, error);
+      }
+    },
+  };
+}
+
+function createUploadItem(file) {
+  return {
+    file,
+    previewUrl: createPreviewUrl(file),
+    progress: null,
+    progressStatus: null,
+    removeButton: null,
+    uploadId: null,
+  };
+}
+
+function createUploadPreview(item, { onRemove, removeLabel }) {
+  const card = document.createElement("article");
+  card.className = "media-preview-card";
+
+  const image = document.createElement("img");
+  image.className = "media-preview-card__visual";
+  image.alt = `선택한 사진: ${item.file.name}`;
+  image.decoding = "async";
+  if (item.previewUrl) {
+    image.src = item.previewUrl;
+  }
+
+  const details = document.createElement("div");
+  details.className = "media-preview-card__details";
+  const name = document.createElement("strong");
+  name.textContent = item.file.name;
+  const size = document.createElement("span");
+  size.textContent = formatFileSize(item.file.size);
+  const progress = document.createElement("progress");
+  progress.className = "media-upload-progress";
+  progress.max = 100;
+  progress.value = item.uploadId ? 100 : 0;
+  progress.setAttribute("aria-label", `${item.file.name} 업로드 진행률`);
+  const progressStatus = document.createElement("span");
+  progressStatus.className = "media-upload-progress__label";
+  progressStatus.textContent = item.uploadId ? "업로드 완료" : "업로드 전";
+  details.append(name, size, progress, progressStatus);
+
+  const removeButton = document.createElement("button");
+  removeButton.className = "media-remove-button";
+  removeButton.type = "button";
+  removeButton.setAttribute("aria-label", removeLabel);
+  removeButton.textContent = "삭제";
+  removeButton.addEventListener("click", onRemove);
+
+  card.append(image, details, removeButton);
+  return { element: card, progress, progressStatus, removeButton };
+}
+
+function validateUploadFile(file, { allowedTypes, maximumBytes }) {
+  if (!allowedTypes.includes(file.type)) {
+    return "JPG, PNG, WebP 형식의 사진을 선택해 주세요.";
+  }
+  if (!Number.isFinite(file.size) || file.size < 1 || file.size > maximumBytes) {
+    return "사진은 10MB 이하의 파일만 올릴 수 있어요.";
+  }
+  return "";
+}
+
+async function ensureMediaUploaded(
+  item,
+  { csrfToken, purpose, uploadsUrl, scoreChangeId },
+) {
+  if (item.uploadId) {
+    updateUploadProgress(item, 100, "업로드 완료");
+    return item.uploadId;
+  }
+
+  updateUploadProgress(item, 2, "업로드를 준비하고 있어요…");
+  const intentBody = {
+    purpose,
+    kind: item.file.type.startsWith("video/") ? "video" : "image",
+    fileName: item.file.name,
+    contentType: item.file.type,
+    byteSize: item.file.size,
+  };
+  if (Number.isInteger(scoreChangeId) && scoreChangeId > 0) {
+    intentBody.scoreChangeId = scoreChangeId;
+  }
+  const intentPayload = await requestJson(uploadsUrl, {
+    cache: "no-store",
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-CSRFToken": csrfToken,
+    },
+    body: JSON.stringify(intentBody),
+  });
+  const intent = readUploadIntent(intentPayload);
+
+  updateUploadProgress(item, 5, "파일을 올리고 있어요…");
+  await putFileWithProgress(intent, item.file, (percentage) => {
+    updateUploadProgress(item, Math.max(5, Math.min(92, percentage)), "파일을 올리고 있어요…");
+  });
+  updateUploadProgress(item, 95, "업로드를 확인하고 있어요…");
+  const completedPayload = await requestJson(
+    mediaCompleteUrl(uploadsUrl, intent.uploadId),
+    {
+      cache: "no-store",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-CSRFToken": csrfToken,
+      },
+      body: "{}",
+    },
+  );
+  readCompletedUpload(completedPayload, intent.uploadId);
+  item.uploadId = intent.uploadId;
+  updateUploadProgress(item, 100, "업로드 완료");
+  return item.uploadId;
+}
+
+function readUploadIntent(payload) {
+  const intent = payload?.success;
+  const headerEntries =
+    intent?.requiredHeaders && typeof intent.requiredHeaders === "object"
+      ? Object.entries(intent.requiredHeaders)
+      : null;
+  if (
+    !intent ||
+    !isUploadId(intent.uploadId) ||
+    typeof intent.uploadUrl !== "string" ||
+    !isHttpUrl(intent.uploadUrl) ||
+    !headerEntries ||
+    headerEntries.some(
+      ([name, value]) =>
+        typeof name !== "string" || !name || typeof value !== "string",
+    ) ||
+    typeof intent.expiresAt !== "string" ||
+    Number.isNaN(Date.parse(intent.expiresAt))
+  ) {
+    throw new Error("업로드 준비 응답 형식이 올바르지 않습니다.");
+  }
+  return intent;
+}
+
+function readCompletedUpload(payload, uploadId) {
+  const completed = payload?.success;
+  if (
+    !completed ||
+    String(completed.id) !== String(uploadId) ||
+    !["image", "video"].includes(completed.kind) ||
+    typeof completed.fileName !== "string" ||
+    typeof completed.contentType !== "string" ||
+    !Number.isInteger(completed.byteSize) ||
+    completed.byteSize <= 0
+  ) {
+    throw new Error("업로드 완료 응답 형식이 올바르지 않습니다.");
+  }
+  return completed;
+}
+
+function isUploadId(value) {
+  return (
+    (typeof value === "string" && value.length > 0 && value.length <= 200) ||
+    (Number.isInteger(value) && value > 0)
+  );
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
+  }
+}
+
+function mediaCompleteUrl(uploadsUrl, uploadId) {
+  return `${String(uploadsUrl).replace(/\/?$/, "/")}${encodeURIComponent(String(uploadId))}/complete/`;
+}
+
+function putFileWithProgress(intent, file, onProgress) {
+  if (typeof XMLHttpRequest !== "function") {
+    onProgress(20);
+    const controller =
+      typeof AbortController === "function" ? new AbortController() : null;
+    const timeoutId =
+      controller && typeof setTimeout === "function"
+        ? setTimeout(() => controller.abort(), MEDIA_UPLOAD_TIMEOUT_MS)
+        : null;
+    return fetch(intent.uploadUrl, {
+      method: "PUT",
+      headers: intent.requiredHeaders,
+      body: file,
+      credentials: "omit",
+      cache: "no-store",
+      ...(controller ? { signal: controller.signal } : {}),
+    })
+      .then((response) => {
+        if (!response.ok || response.redirected) {
+          throw new Error("파일 저장소가 업로드를 거부했습니다.");
+        }
+        onProgress(92);
+      })
+      .catch((error) => {
+        if (controller?.signal.aborted) {
+          throw new Error(
+            "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
+          );
+        }
+        throw error;
+      })
+      .finally(() => {
+        if (timeoutId !== null && typeof clearTimeout === "function") {
+          clearTimeout(timeoutId);
+        }
+      });
+  }
+
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", intent.uploadUrl, true);
+    request.withCredentials = false;
+    request.timeout = MEDIA_UPLOAD_TIMEOUT_MS;
+    Object.entries(intent.requiredHeaders).forEach(([name, value]) => {
+      request.setRequestHeader(name, value);
+    });
+    request.upload?.addEventListener("progress", (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.round((event.loaded / event.total) * 92));
+      }
+    });
+    request.addEventListener("load", () => {
+      if (request.status >= 200 && request.status < 300) {
+        onProgress(92);
+        resolve();
+      } else {
+        reject(new Error("파일 저장소가 업로드를 거부했습니다."));
+      }
+    });
+    request.addEventListener("error", () => {
+      reject(new Error("파일을 올리는 중 네트워크 연결이 끊겼습니다."));
+    });
+    request.addEventListener("abort", () => {
+      reject(new Error("파일 업로드가 취소되었습니다."));
+    });
+    request.addEventListener("timeout", () => {
+      reject(
+        new Error("파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요."),
+      );
+    });
+    request.send(file);
+  });
+}
+
+function updateUploadProgress(item, value, label) {
+  if (item.progress) {
+    item.progress.value = value;
+  }
+  if (item.progressStatus) {
+    item.progressStatus.textContent = label;
+  }
+}
+
+function markUploadFailed(item) {
+  item.uploadId = null;
+  updateUploadProgress(item, 0, "업로드 실패 · 다시 시도해 주세요");
+}
+
+function createPreviewUrl(file) {
+  try {
+    return typeof URL.createObjectURL === "function" ? URL.createObjectURL(file) : "";
+  } catch {
+    return "";
+  }
+}
+
+function revokePreviewUrl(url) {
+  if (!url) {
+    return;
+  }
+  try {
+    URL.revokeObjectURL?.(url);
+  } catch {
+    return;
+  }
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+  }
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 }
 
 async function requestJson(url, options = {}) {
@@ -229,6 +647,18 @@ class ApiRequestError extends Error {
     this.status = status;
     this.apiError = apiError;
   }
+}
+
+class MediaUploadError extends Error {
+  constructor(message, cause) {
+    super(message);
+    this.name = "MediaUploadError";
+    this.cause = cause;
+  }
+}
+
+function unwrapMediaUploadError(error) {
+  return error instanceof MediaUploadError ? error.cause : error;
 }
 
 function readRelationshipScores(payload) {
@@ -495,6 +925,15 @@ function isScoreUnchangedError(error) {
   return (
     error instanceof ApiRequestError &&
     error.apiError?.errorCode === "SCORE_UNCHANGED"
+  );
+}
+
+function shouldResetMediaUploads(error) {
+  return (
+    error instanceof ApiRequestError &&
+    ["MEDIA_UPLOAD_CONFLICT", "NOT_FOUND", "PERMISSION_DENIED"].includes(
+      error.apiError?.errorCode,
+    )
   );
 }
 

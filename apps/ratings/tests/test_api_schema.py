@@ -28,14 +28,24 @@ ERROR_PAIRS = {
         ("AUTHENTICATION", "CSRF_FAILED"),
         ("AUTHORIZATION", "PARTICIPANT_REQUIRED"),
     },
+    "MediaForbiddenErrorEnvelope": {
+        ("AUTHENTICATION", "AUTHENTICATION_REQUIRED"),
+        ("AUTHENTICATION", "CSRF_FAILED"),
+        ("AUTHORIZATION", "PARTICIPANT_REQUIRED"),
+        ("AUTHORIZATION", "PERMISSION_DENIED"),
+    },
+    "NotFoundErrorEnvelope": {("NOT_FOUND", "NOT_FOUND")},
     "NotAcceptableErrorEnvelope": {("REQUEST", "NOT_ACCEPTABLE")},
     "ScoreOutOfRangeErrorEnvelope": {
         ("CONFLICT", "SCORE_OUT_OF_RANGE"),
         ("CONFLICT", "SCORE_UNCHANGED"),
+        ("CONFLICT", "MEDIA_UPLOAD_CONFLICT"),
     },
+    "MediaUploadConflictErrorEnvelope": {("CONFLICT", "MEDIA_UPLOAD_CONFLICT")},
     "RequestBodyTooLargeErrorEnvelope": {("REQUEST", "REQUEST_BODY_TOO_LARGE")},
     "UnsupportedMediaTypeErrorEnvelope": {("REQUEST", "UNSUPPORTED_MEDIA_TYPE")},
     "InternalServerErrorEnvelope": {("SERVER", "INTERNAL_SERVER_ERROR")},
+    "MediaUploadsUnavailableErrorEnvelope": {("SERVER", "MEDIA_UPLOADS_UNAVAILABLE")},
 }
 
 
@@ -102,6 +112,8 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
     assert document["info"]["title"] == "우리 사이 API"
     assert "resultType" not in document
     assert set(document["paths"]) == {
+        "/api/v1/media-uploads/",
+        "/api/v1/media-uploads/{upload_id}/complete/",
         "/api/v1/push-devices/register/",
         "/api/v1/push-devices/unregister/",
         "/api/v1/relationship-scores/",
@@ -213,7 +225,12 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
         {"required": ["delta"]},
         {"required": ["targetScore"]},
     ]
-    assert set(request_schema["properties"]) == {"delta", "targetScore", "reason"}
+    assert set(request_schema["properties"]) == {
+        "delta",
+        "targetScore",
+        "reason",
+        "mediaUploadIds",
+    }
     delta_schema = request_schema["properties"]["delta"]
     assert delta_schema["type"] == "integer"
     assert delta_schema["maximum"] == 100
@@ -225,23 +242,29 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
     assert target_score_schema["maximum"] == 100
     assert request_schema["properties"]["reason"]["type"] == "string"
     assert request_schema["properties"]["reason"]["maxLength"] == 200
+    assert request_schema["properties"]["mediaUploadIds"] == {
+        "type": "array",
+        "items": {"type": "string", "format": "uuid"},
+        "maxItems": 1,
+        "uniqueItems": True,
+        "default": [],
+    }
 
     responses = operation["responses"]
-    assert set(responses) == {
-        "201",
-        "400",
-        "403",
-        "406",
-        "409",
-        "413",
-        "415",
-        "500",
+    response_components = {
+        "201": "ScoreChangeSuccessEnvelope",
+        "400": "BadRequestErrorEnvelope",
+        "403": "MediaForbiddenErrorEnvelope",
+        "404": "NotFoundErrorEnvelope",
+        "406": "NotAcceptableErrorEnvelope",
+        "409": "ScoreOutOfRangeErrorEnvelope",
+        "413": "RequestBodyTooLargeErrorEnvelope",
+        "415": "UnsupportedMediaTypeErrorEnvelope",
+        "500": "InternalServerErrorEnvelope",
+        "503": "MediaUploadsUnavailableErrorEnvelope",
     }
-    success_response_schema = responses["201"]["content"]["application/json"]["schema"]
-    assert success_response_schema == {
-        "$ref": "#/components/schemas/ScoreChangeSuccessEnvelope"
-    }
-    for status_code, component_name in ERROR_RESPONSE_COMPONENTS.items():
+    assert set(responses) == set(response_components)
+    for status_code, component_name in response_components.items():
         assert responses[status_code]["content"]["application/json"]["schema"] == {
             "$ref": f"#/components/schemas/{component_name}"
         }
@@ -251,6 +274,156 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
         "in": "cookie",
         "name": "sessionid",
     }
+
+
+def test_media_upload_operations_declare_direct_upload_and_completion_contract(client):
+    document = client.get(
+        reverse("api-schema"),
+        HTTP_ACCEPT="application/json",
+    ).json()
+    paths = document["paths"]
+    initiate = paths["/api/v1/media-uploads/"]["post"]
+    complete = paths["/api/v1/media-uploads/{upload_id}/complete/"]["post"]
+
+    for operation in (initiate, complete):
+        assert operation["security"] == [{"cookieAuth": []}]
+        csrf = next(
+            parameter
+            for parameter in operation["parameters"]
+            if parameter["name"] == "X-CSRFToken"
+        )
+        assert csrf["in"] == "header"
+        assert csrf["required"] is True
+        assert operation["requestBody"]["required"] is True
+        assert set(operation["requestBody"]["content"]) == {"application/json"}
+
+    initiate_request = _resolve_schema(
+        document,
+        initiate["requestBody"]["content"]["application/json"]["schema"],
+    )
+    assert initiate_request["type"] == "object"
+    assert initiate_request["additionalProperties"] is False
+    assert set(initiate_request["required"]) == {
+        "purpose",
+        "kind",
+        "fileName",
+        "contentType",
+        "byteSize",
+    }
+    assert set(initiate_request["properties"]) == {
+        "purpose",
+        "kind",
+        "fileName",
+        "contentType",
+        "byteSize",
+        "scoreChangeId",
+    }
+    assert set(_enum_values(document, initiate_request["properties"]["purpose"])) == {
+        "scoreChange",
+        "comment",
+    }
+    assert set(_enum_values(document, initiate_request["properties"]["kind"])) == {
+        "image",
+        "video",
+    }
+    assert initiate_request["properties"]["fileName"] == {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 255,
+    }
+    assert initiate_request["properties"]["contentType"] == {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 100,
+    }
+    assert initiate_request["properties"]["byteSize"] == {
+        "type": "integer",
+        "minimum": 1,
+    }
+    assert initiate_request["properties"]["scoreChangeId"] == {
+        "type": "integer",
+        "minimum": 1,
+    }
+    assert initiate_request["allOf"] == [
+        {
+            "if": {"properties": {"purpose": {"const": "comment"}}},
+            "then": {"required": ["scoreChangeId"]},
+        },
+        {
+            "if": {"properties": {"purpose": {"const": "scoreChange"}}},
+            "then": {
+                "properties": {"kind": {"const": "image"}},
+                "not": {"required": ["scoreChangeId"]},
+            },
+        },
+    ]
+
+    complete_parameters = {
+        parameter["name"]: parameter for parameter in complete["parameters"]
+    }
+    assert complete_parameters["upload_id"] == {
+        "in": "path",
+        "name": "upload_id",
+        "schema": {"type": "string", "format": "uuid"},
+        "required": True,
+    }
+    complete_request = _resolve_schema(
+        document,
+        complete["requestBody"]["content"]["application/json"]["schema"],
+    )
+    assert complete_request == {
+        "type": "object",
+        "additionalProperties": False,
+    }
+
+    shared_error_responses = {
+        "400": "BadRequestErrorEnvelope",
+        "403": "MediaForbiddenErrorEnvelope",
+        "404": "NotFoundErrorEnvelope",
+        "406": "NotAcceptableErrorEnvelope",
+        "409": "MediaUploadConflictErrorEnvelope",
+        "413": "RequestBodyTooLargeErrorEnvelope",
+        "415": "UnsupportedMediaTypeErrorEnvelope",
+        "500": "InternalServerErrorEnvelope",
+        "503": "MediaUploadsUnavailableErrorEnvelope",
+    }
+    operation_contracts = (
+        (initiate, "201", "MediaUploadInitiatedSuccessEnvelope"),
+        (complete, "200", "CompletedMediaUploadSuccessEnvelope"),
+    )
+    for operation, success_status, success_component in operation_contracts:
+        response_components = {
+            success_status: success_component,
+            **shared_error_responses,
+        }
+        assert set(operation["responses"]) == set(response_components)
+        for status_code, component_name in response_components.items():
+            assert operation["responses"][status_code]["content"]["application/json"][
+                "schema"
+            ] == {"$ref": f"#/components/schemas/{component_name}"}
+
+    schemas = document["components"]["schemas"]
+    initiated_envelope = schemas["MediaUploadInitiatedSuccessEnvelope"]
+    assert initiated_envelope["properties"]["success"] == {
+        "$ref": "#/components/schemas/InitiatedMediaUploadData"
+    }
+    initiated_data = schemas["InitiatedMediaUploadData"]
+    initiated_fields = {"uploadId", "uploadUrl", "requiredHeaders", "expiresAt"}
+    assert set(initiated_data["required"]) == initiated_fields
+    assert set(initiated_data["properties"]) == initiated_fields
+    assert initiated_data["properties"]["uploadId"]["format"] == "uuid"
+    assert initiated_data["properties"]["uploadUrl"]["format"] == "uri"
+    assert initiated_data["properties"]["requiredHeaders"]["additionalProperties"] == {
+        "type": "string"
+    }
+    assert initiated_data["properties"]["expiresAt"]["format"] == "date-time"
+    assert schemas["CompletedMediaUploadSuccessEnvelope"]["properties"]["success"] == {
+        "$ref": "#/components/schemas/CompletedMediaUploadData"
+    }
+    completed_data = schemas["CompletedMediaUploadData"]
+    completed_fields = {"id", "kind", "fileName", "contentType", "byteSize"}
+    assert set(completed_data["required"]) == completed_fields
+    assert set(completed_data["properties"]) == completed_fields
 
 
 def test_score_change_history_operation_declares_page_number_list_contract(client):
@@ -320,6 +493,7 @@ def test_score_change_history_operation_declares_page_number_list_contract(clien
         "createdAt",
         "commentCount",
         "threadUrl",
+        "attachments",
     }
     assert set(item["required"]) == item_fields
     assert set(item["properties"]) == item_fields
@@ -333,6 +507,11 @@ def test_score_change_history_operation_declares_page_number_list_contract(clien
     assert item["properties"]["createdAt"]["format"] == "date-time"
     assert item["properties"]["commentCount"]["minimum"] == 0
     assert item["properties"]["threadUrl"]["type"] == "string"
+    assert item["properties"]["attachments"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/MediaAttachmentData"},
+        "readOnly": True,
+    }
 
     paging = schemas["PageNumberPaging"]
     assert set(paging["required"]) == {
@@ -413,6 +592,7 @@ def test_score_change_thread_detail_declares_private_nested_comment_contract(cli
         "createdAt",
         "commentCount",
         "threadUrl",
+        "attachments",
         "comments",
     }
     assert thread["properties"]["comments"] == {
@@ -428,10 +608,16 @@ def test_score_change_thread_detail_declares_private_nested_comment_contract(cli
         "content",
         "createdAt",
         "isMine",
+        "attachments",
     }
     assert comment["properties"]["content"]["maxLength"] == 500
     assert comment["properties"]["createdAt"]["format"] == "date-time"
     assert comment["properties"]["isMine"]["type"] == "boolean"
+    assert comment["properties"]["attachments"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/MediaAttachmentData"},
+        "readOnly": True,
+    }
 
 
 def test_score_change_comment_operation_declares_strict_csrf_contract(client):
@@ -468,22 +654,39 @@ def test_score_change_comment_operation_declares_strict_csrf_contract(client):
         "properties": {
             "content": {
                 "type": "string",
-                "minLength": 1,
                 "maxLength": 500,
-            }
+            },
+            "mediaUploadIds": {
+                "type": "array",
+                "items": {"type": "string", "format": "uuid"},
+                "maxItems": 4,
+                "uniqueItems": True,
+                "default": [],
+            },
         },
-        "required": ["content"],
+        "anyOf": [
+            {
+                "required": ["content"],
+                "properties": {"content": {"minLength": 1}},
+            },
+            {
+                "required": ["mediaUploadIds"],
+                "properties": {"mediaUploadIds": {"minItems": 1}},
+            },
+        ],
     }
 
     response_components = {
         "201": "ScoreChangeCommentSuccessEnvelope",
         "400": "BadRequestErrorEnvelope",
-        "403": "ForbiddenErrorEnvelope",
+        "403": "MediaForbiddenErrorEnvelope",
         "404": "NotFoundErrorEnvelope",
         "406": "NotAcceptableErrorEnvelope",
+        "409": "MediaUploadConflictErrorEnvelope",
         "413": "RequestBodyTooLargeErrorEnvelope",
         "415": "UnsupportedMediaTypeErrorEnvelope",
         "500": "InternalServerErrorEnvelope",
+        "503": "MediaUploadsUnavailableErrorEnvelope",
     }
     assert set(operation["responses"]) == set(response_components)
     for status_code, component_name in response_components.items():
@@ -612,6 +815,7 @@ def test_openapi_envelopes_are_exclusive_and_fields_match_runtime_contract(clien
         "reason",
         "resultingScore",
         "createdAt",
+        "attachments",
     }
     assert set(score_change["properties"]) == {
         "id",
@@ -619,6 +823,7 @@ def test_openapi_envelopes_are_exclusive_and_fields_match_runtime_contract(clien
         "reason",
         "resultingScore",
         "createdAt",
+        "attachments",
     }
     assert "resulting_score" not in score_change["properties"]
     assert "created_at" not in score_change["properties"]
@@ -627,9 +832,31 @@ def test_openapi_envelopes_are_exclusive_and_fields_match_runtime_contract(clien
     assert score_change["properties"]["reason"]["maxLength"] == 200
     assert score_change["properties"]["resultingScore"]["minimum"] == 0
     assert score_change["properties"]["resultingScore"]["maximum"] == 100
+    assert score_change["properties"]["attachments"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/MediaAttachmentData"},
+        "readOnly": True,
+    }
+
+    attachment = schemas["MediaAttachmentData"]
+    attachment_fields = {
+        "id",
+        "kind",
+        "fileName",
+        "contentType",
+        "byteSize",
+        "contentUrl",
+    }
+    assert set(attachment["required"]) == attachment_fields
+    assert set(attachment["properties"]) == attachment_fields
+    assert attachment["properties"]["id"]["format"] == "uuid"
+    assert attachment["properties"]["fileName"]["maxLength"] == 255
+    assert attachment["properties"]["contentType"]["maxLength"] == 100
+    assert attachment["properties"]["byteSize"]["minimum"] == 1
+    assert attachment["properties"]["contentUrl"]["type"] == "string"
 
     observed_pairs_by_component = {}
-    for component_name in ERROR_RESPONSE_COMPONENTS.values():
+    for component_name in ERROR_PAIRS:
         envelope = schemas[component_name]
         assert set(envelope["required"]) == {"resultType", "error", "success"}
         assert _enum_values(

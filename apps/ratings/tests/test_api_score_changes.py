@@ -165,6 +165,7 @@ def test_participant_can_change_their_score_with_rendered_csrf_and_same_origin(
             "reason": "고마워",
             "resultingScore": 13,
             "createdAt": response.json()["success"]["createdAt"],
+            "attachments": [],
         },
     }
     assert parse_datetime(response.json()["success"]["createdAt"]) == change.created_at
@@ -217,6 +218,7 @@ def test_participant_can_set_their_final_score_with_a_target_score(
         "reason": "최종 점수로 기록",
         "resultingScore": target_score,
         "createdAt": response.json()["success"]["createdAt"],
+        "attachments": [],
     }
     assert participant_pair.first_to_second.current_score == target_score
     assert participant_pair.second_to_first.current_score == 0

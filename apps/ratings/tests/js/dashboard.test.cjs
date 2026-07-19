@@ -300,6 +300,168 @@ function readCreatedChangeValidation(payload, command) {
   return JSON.parse(JSON.stringify(sandbox.createdChangeValidation));
 }
 
+function readCompletedUploadValidation(payload, uploadId) {
+  const fixture = JSON.stringify({ payload, uploadId });
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+  };
+
+  vm.runInNewContext(
+    `${dashboardSource}
+      {
+        const fixture = ${fixture};
+        try {
+          const completed = readCompletedUpload(
+            fixture.payload,
+            fixture.uploadId,
+          );
+          globalThis.completedUploadValidation = { ok: true, completed };
+        } catch (error) {
+          globalThis.completedUploadValidation = {
+            ok: false,
+            message: error.message,
+          };
+        }
+      }
+    `,
+    sandbox,
+    { filename: dashboardScriptPath },
+  );
+
+  return JSON.parse(JSON.stringify(sandbox.completedUploadValidation));
+}
+
+function readMediaUploadResetDecision({ status, errorCode }) {
+  const fixture = JSON.stringify({ status, errorCode });
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+  };
+
+  vm.runInNewContext(
+    `${dashboardSource}
+      {
+        const fixture = ${fixture};
+        globalThis.mediaUploadResetDecision = shouldResetMediaUploads(
+          new ApiRequestError(fixture.status, {
+            errorCode: fixture.errorCode,
+            reason: "test",
+            details: [],
+          }),
+        );
+      }`,
+    sandbox,
+    { filename: dashboardScriptPath },
+  );
+
+  return sandbox.mediaUploadResetDecision;
+}
+
+async function runDirectUploadLifecycle() {
+  const events = [];
+  const file = {
+    name: "마음 <script>.jpg",
+    size: 512,
+    type: "image/jpeg",
+  };
+  const uploadId = "00000000-0000-4000-8000-000000000001";
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+    fetch(url, options = {}) {
+      events.push({
+        bodyIsFile: options.body === file,
+        cache: options.cache,
+        credentials: options.credentials,
+        headers: options.headers,
+        method: options.method,
+        stage: "put",
+        url,
+      });
+      return Promise.resolve({ ok: true, redirected: false });
+    },
+    URL,
+    window: { location: { origin: "https://friendly.test" } },
+  };
+
+  vm.runInNewContext(
+    `${dashboardSource}
+      {
+        const item = {
+          file: globalThis.testFile,
+          progress: { value: 0 },
+          progressStatus: { textContent: "" },
+          uploadId: null,
+        };
+        requestJson = async (url, options) => {
+          globalThis.events.push({
+            body: options.body,
+            cache: options.cache,
+            headers: options.headers,
+            method: options.method,
+            stage: url === "/api/v1/media-uploads/" ? "intent" : "complete",
+            url,
+          });
+          if (url === "/api/v1/media-uploads/") {
+            return {
+              resultType: "SUCCESS",
+              error: null,
+              success: {
+                uploadId: "${uploadId}",
+                uploadUrl: "https://r2.example.test/pending/object",
+                requiredHeaders: { "Content-Type": "image/jpeg" },
+                expiresAt: "2026-07-19T12:00:00Z",
+              },
+            };
+          }
+          return {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              id: "${uploadId}",
+              kind: "image",
+              fileName: "마음 <script>.jpg",
+              contentType: "image/jpeg",
+              byteSize: 512,
+            },
+          };
+        };
+        globalThis.uploadPromise = ensureMediaUploaded(item, {
+          csrfToken: "rendered-csrf-token",
+          purpose: "scoreChange",
+          uploadsUrl: "/api/v1/media-uploads/",
+        }).then((result) => ({
+          progress: item.progress.value,
+          progressLabel: item.progressStatus.textContent,
+          result,
+        }));
+      }
+    `,
+    Object.assign(sandbox, { events, testFile: file }),
+    { filename: dashboardScriptPath },
+  );
+
+  const result = await sandbox.uploadPromise;
+  return {
+    events: JSON.parse(JSON.stringify(events)),
+    result: JSON.parse(JSON.stringify(result)),
+    uploadId,
+  };
+}
+
 test("increase maps the entered amount to a positive delta", () => {
   assert.deepEqual(
     readCommand({ operation: "increase", amount: "3", reason: "  고마워  " }),
@@ -467,6 +629,99 @@ test("targetScore API errors are attached to the shared amount input", () => {
       { field: "targetScore", message: "최종 점수를 확인해 주세요." },
     ]),
     [{ field: "amount", message: "최종 점수를 확인해 주세요." }],
+  );
+});
+
+test("media upload runs intent, direct PUT, and completion in order", async () => {
+  const { events, result, uploadId } = await runDirectUploadLifecycle();
+
+  assert.deepEqual(events.map((event) => event.stage), [
+    "intent",
+    "put",
+    "complete",
+  ]);
+  assert.deepEqual(JSON.parse(events[0].body), {
+    purpose: "scoreChange",
+    kind: "image",
+    fileName: "마음 <script>.jpg",
+    contentType: "image/jpeg",
+    byteSize: 512,
+  });
+  assert.equal(events[0].method, "POST");
+  assert.equal(events[0].headers["X-CSRFToken"], "rendered-csrf-token");
+
+  assert.equal(events[1].url, "https://r2.example.test/pending/object");
+  assert.equal(events[1].method, "PUT");
+  assert.deepEqual(events[1].headers, { "Content-Type": "image/jpeg" });
+  assert.equal(events[1].bodyIsFile, true);
+  assert.equal(events[1].credentials, "omit");
+  assert.equal(events[1].cache, "no-store");
+
+  assert.equal(
+    events[2].url,
+    `/api/v1/media-uploads/${uploadId}/complete/`,
+  );
+  assert.equal(events[2].method, "POST");
+  assert.equal(events[2].body, "{}");
+  assert.equal(events[2].headers["X-CSRFToken"], "rendered-csrf-token");
+  assert.deepEqual(result, {
+    progress: 100,
+    progressLabel: "업로드 완료",
+    result: uploadId,
+  });
+});
+
+test("media completion rejects a malformed or mismatched success payload", () => {
+  const uploadId = "00000000-0000-4000-8000-000000000001";
+  const completed = {
+    id: uploadId,
+    kind: "image",
+    fileName: "photo.jpg",
+    contentType: "image/jpeg",
+    byteSize: 512,
+  };
+
+  assert.deepEqual(
+    readCompletedUploadValidation({ success: completed }, uploadId),
+    { ok: true, completed },
+  );
+
+  assert.deepEqual(readCompletedUploadValidation({ success: {} }, uploadId), {
+    ok: false,
+    message: "업로드 완료 응답 형식이 올바르지 않습니다.",
+  });
+  assert.deepEqual(
+    readCompletedUploadValidation(
+      {
+        success: {
+          id: "00000000-0000-4000-8000-000000000002",
+          kind: "image",
+          fileName: "photo.jpg",
+          contentType: "image/jpeg",
+          byteSize: 512,
+          contentUrl: `/media/${uploadId}/content/`,
+        },
+      },
+      uploadId,
+    ),
+    {
+      ok: false,
+      message: "업로드 완료 응답 형식이 올바르지 않습니다.",
+    },
+  );
+});
+
+test("dashboard resets upload IDs that can no longer be attached", () => {
+  for (const [status, errorCode] of [
+    [409, "MEDIA_UPLOAD_CONFLICT"],
+    [404, "NOT_FOUND"],
+    [403, "PERMISSION_DENIED"],
+  ]) {
+    assert.equal(readMediaUploadResetDecision({ status, errorCode }), true);
+  }
+  assert.equal(
+    readMediaUploadResetDecision({ status: 400, errorCode: "INVALID_INPUT" }),
+    false,
   );
 });
 

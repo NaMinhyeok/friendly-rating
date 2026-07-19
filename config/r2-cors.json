@@ -1,0 +1,17 @@
+{
+  "rules": [
+    {
+      "allowed": {
+        "origins": [
+          "https://woorisai.up.railway.app",
+          "http://localhost:8000",
+          "http://127.0.0.1:8000"
+        ],
+        "methods": ["GET", "HEAD", "PUT"],
+        "headers": ["cache-control", "content-length", "content-type", "range"]
+      },
+      "exposeHeaders": ["etag"],
+      "maxAgeSeconds": 3600
+    }
+  ]
+}

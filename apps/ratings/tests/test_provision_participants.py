@@ -1,4 +1,5 @@
 import re
+from datetime import timedelta
 from io import StringIO
 from typing import cast
 from unittest.mock import patch
@@ -12,8 +13,10 @@ from django.core.management.base import CommandError
 from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
+from django.utils import timezone
 
 from ..models import (
+    MediaAttachment,
     Participant,
     PushDevice,
     RelationshipScore,
@@ -149,7 +152,30 @@ class ProvisionParticipantsCommandTests(TestCase):
                     "score_change_id",
                     "author_id",
                     "content",
+                    "media_count",
                     "created_at",
+                )
+            ),
+            "media_attachments": list(
+                MediaAttachment.objects.order_by("created_at", "pk").values(
+                    "pk",
+                    "uploader_id",
+                    "score_change_id",
+                    "comment_id",
+                    "purpose",
+                    "kind",
+                    "status",
+                    "object_key",
+                    "original_name",
+                    "content_type",
+                    "expected_size",
+                    "actual_size",
+                    "etag",
+                    "expires_at",
+                    "created_at",
+                    "finalized_at",
+                    "finalization_token",
+                    "position",
                 )
             ),
             "devices": list(
@@ -178,10 +204,45 @@ class ProvisionParticipantsCommandTests(TestCase):
             resulting_score=7,
         )
         second = Participant.objects.get(slot=Participant.Slot.SECOND)
-        ScoreChangeComment.objects.create(
+        comment = ScoreChangeComment.objects.create(
             score_change=change,
             author=second,
             content="보존할 댓글",
+            media_count=1,
+        )
+        finalized_at = timezone.now()
+        MediaAttachment.objects.create(
+            uploader=first,
+            score_change=change,
+            purpose=MediaAttachment.Purpose.SCORE_CHANGE,
+            kind=MediaAttachment.Kind.IMAGE,
+            status=MediaAttachment.Status.ATTACHED,
+            object_key="media/provision-score-image",
+            original_name="점수사진.webp",
+            content_type="image/webp",
+            expected_size=1_024,
+            actual_size=1_024,
+            etag="score-image-etag",
+            expires_at=finalized_at + timedelta(hours=1),
+            finalized_at=finalized_at,
+            position=0,
+        )
+        MediaAttachment.objects.create(
+            uploader=second,
+            score_change=change,
+            comment=comment,
+            purpose=MediaAttachment.Purpose.COMMENT,
+            kind=MediaAttachment.Kind.VIDEO,
+            status=MediaAttachment.Status.ATTACHED,
+            object_key="media/provision-comment-video",
+            original_name="댓글영상.mp4",
+            content_type="video/mp4",
+            expected_size=4_096,
+            actual_size=4_096,
+            etag="comment-video-etag",
+            expires_at=finalized_at + timedelta(hours=1),
+            finalized_at=finalized_at,
+            position=0,
         )
         PushDevice.objects.create(
             participant=first,
@@ -314,6 +375,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         )
         history_snapshot = list(ScoreChange.objects.order_by("pk").values())
         comment_snapshot = list(ScoreChangeComment.objects.order_by("pk").values())
+        media_snapshot = list(MediaAttachment.objects.order_by("pk").values())
         device_snapshot = list(PushDevice.objects.order_by("pk").values())
 
         output = self.run_command("--reconcile", environment=RECONCILED_ENV)
@@ -340,6 +402,10 @@ class ProvisionParticipantsCommandTests(TestCase):
         self.assertEqual(
             list(ScoreChangeComment.objects.order_by("pk").values()),
             comment_snapshot,
+        )
+        self.assertEqual(
+            list(MediaAttachment.objects.order_by("pk").values()),
+            media_snapshot,
         )
         self.assertEqual(
             list(PushDevice.objects.order_by("pk").values()), device_snapshot

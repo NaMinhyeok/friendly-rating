@@ -79,6 +79,7 @@ async function loadHistoryPage(root, pageNumber) {
 async function requestJson(url) {
   const response = await fetch(url, {
     credentials: "same-origin",
+    cache: "no-store",
     headers: { Accept: "application/json" },
   });
   const contentType = response.headers.get("Content-Type") || "";
@@ -158,9 +159,49 @@ function validateHistoryItem(item) {
     !Number.isInteger(item.commentCount) ||
     item.commentCount < 0 ||
     typeof item.threadUrl !== "string" ||
-    !/^\/history\/[1-9]\d*\/$/.test(item.threadUrl)
+    !/^\/history\/[1-9]\d*\/$/.test(item.threadUrl) ||
+    !validateAttachments(item.attachments)
   ) {
     throw new Error("마음 기록 항목 형식이 올바르지 않습니다.");
+  }
+}
+
+function validateAttachments(value) {
+  if (value === undefined) {
+    return true;
+  }
+  return (
+    Array.isArray(value) &&
+    value.length <= 1 &&
+    value.every((attachment) => {
+      const validId =
+        (Number.isInteger(attachment?.id) && attachment.id > 0) ||
+        (typeof attachment?.id === "string" && attachment.id.length > 0);
+      return (
+        validId &&
+        attachment.kind === "image" &&
+        typeof attachment.fileName === "string" &&
+        [...attachment.fileName].length > 0 &&
+        [...attachment.fileName].length <= 255 &&
+        ["image/jpeg", "image/png", "image/webp"].includes(
+          attachment.contentType,
+        ) &&
+        Number.isInteger(attachment.byteSize) &&
+        attachment.byteSize > 0 &&
+        attachment.byteSize <= 10 * 1024 * 1024 &&
+        typeof attachment.contentUrl === "string" &&
+        isHttpUrl(attachment.contentUrl)
+      );
+    })
+  );
+}
+
+function isHttpUrl(value) {
+  try {
+    const url = new URL(value, window.location.origin);
+    return url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    return false;
   }
 }
 
@@ -223,6 +264,13 @@ function createHistoryItem(change) {
     card.append(reason);
   }
 
+  const attachment = Array.isArray(change.attachments)
+    ? change.attachments[0]
+    : null;
+  if (attachment) {
+    card.append(createImageAttachment(attachment));
+  }
+
   const footer = document.createElement("footer");
   const changedBy = document.createElement("span");
   changedBy.textContent = `변경자 ${change.changedBy.displayName}`;
@@ -239,6 +287,25 @@ function createHistoryItem(change) {
   link.append(card);
   item.append(dot, link);
   return item;
+}
+
+function createImageAttachment(attachment) {
+  const container = document.createElement("figure");
+  container.className = "attachment attachment--image attachment--history";
+  const contentUrl = new URL(
+    attachment.contentUrl,
+    window.location.origin,
+  ).href;
+  const image = document.createElement("img");
+  image.src = contentUrl;
+  image.alt = attachment.fileName;
+  image.loading = "lazy";
+  image.decoding = "async";
+  image.referrerPolicy = "no-referrer";
+  const caption = document.createElement("figcaption");
+  caption.textContent = "첨부 사진 · 대화에서 다운로드";
+  container.append(image, caption);
+  return container;
 }
 
 function formatCreatedAt(value) {

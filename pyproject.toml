@@ -5,6 +5,7 @@ description = "A private relationship rating app for two participants"
 requires-python = ">=3.13,<3.14"
 dependencies = [
     "Django==5.2.16",
+    "boto3==1.43.51",
     "dj-database-url==3.1.2",
     "django-axes==8.3.1",
     "djangorestframework==3.16.1",

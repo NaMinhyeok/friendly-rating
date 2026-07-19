@@ -248,7 +248,7 @@ def api_exception_handler(
             status=500,
         )
 
-    if response.status_code >= 500:
+    if response.status_code >= 500 and not isinstance(exception, ApiProblem):
         response.data = error_envelope(
             error_type=ErrorType.SERVER,
             error_code=ErrorCode.INTERNAL_SERVER_ERROR,

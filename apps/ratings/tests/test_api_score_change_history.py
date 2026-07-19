@@ -89,6 +89,7 @@ def test_participant_can_read_shared_bidirectional_history(participant_pair):
                         "score-change-thread",
                         kwargs={"score_change_id": second_change.pk},
                     ),
+                    "attachments": [],
                 },
                 {
                     "id": first_change.pk,
@@ -113,6 +114,7 @@ def test_participant_can_read_shared_bidirectional_history(participant_pair):
                         "score-change-thread",
                         kwargs={"score_change_id": first_change.pk},
                     ),
+                    "attachments": [],
                 },
             ],
             "paging": {

@@ -2,6 +2,8 @@ from django.urls import path
 
 from .views import (
     ApiNotFoundView,
+    MediaUploadCompleteView,
+    MediaUploadInitiateView,
     PushDeviceRegisterView,
     PushDeviceUnregisterView,
     RelationshipScoreListView,
@@ -13,6 +15,16 @@ from .views import (
 app_name = "ratings-api"
 
 urlpatterns = [
+    path(
+        "media-uploads/",
+        MediaUploadInitiateView.as_view(),
+        name="media-upload-list",
+    ),
+    path(
+        "media-uploads/<uuid:upload_id>/complete/",
+        MediaUploadCompleteView.as_view(),
+        name="media-upload-complete",
+    ),
     path(
         "relationship-scores/",
         RelationshipScoreListView.as_view(),

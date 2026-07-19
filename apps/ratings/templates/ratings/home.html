@@ -21,6 +21,7 @@
     data-dashboard-root
     data-scores-url="{% url 'api-v1:relationship-score-list' %}"
     data-score-changes-url="{% url 'api-v1:score-change-list' %}"
+    {% if media_uploads_available %}data-media-uploads-url="{% url 'api-v1:media-upload-list' %}"{% endif %}
 >
     {% include "ratings/_messages.html" %}
     <noscript>
@@ -124,6 +125,29 @@
                 ></textarea>
                 <ul id="error-reason" class="errorlist" data-error-for="reason" hidden></ul>
             </div>
+
+            {% if media_uploads_available %}
+            <div class="field-group media-field" data-score-media-field>
+                <div class="field-label-row">
+                    <span class="field-label">이유에 사진 추가 (선택)</span>
+                    <span class="media-limit">최대 10MB</span>
+                </div>
+                <input
+                    class="media-file-input"
+                    id="id_score_image"
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp"
+                    data-score-media-input
+                >
+                <label class="media-picker" for="id_score_image">
+                    <span aria-hidden="true">＋</span>
+                    사진 선택
+                </label>
+                <p class="field-help">JPG, PNG, WebP 사진 한 장을 함께 남길 수 있어요.</p>
+                <div class="media-selection media-selection--single" data-score-media-selection hidden></div>
+                <p class="media-status" data-score-media-status role="status" aria-live="polite"></p>
+            </div>
+            {% endif %}
 
             <button class="button button--primary button--full" type="submit" disabled data-score-submit>
                 <span data-score-submit-label>이 마음 기록하기</span>
