@@ -24,6 +24,7 @@
 - `apps/ratings/models.py`: 영속 모델과 DB 불변식
 - `apps/ratings/score_rules.py`: ORM과 외부 I/O가 없는 점수 도메인 규칙
 - `apps/ratings/services/`: 트랜잭션을 포함한 애플리케이션 작업
+- `apps/ratings/api/`: DRF 요청 검증, 인증·오류 envelope와 OpenAPI 경계
 - `apps/ratings/views/`: HTTP 변환, 인증, 응답 조립
 - `apps/ratings/participant_provisioning/`: 두 참가자 구성을 검사·초기화·복구
 - `apps/ratings/templates/ratings/`, `apps/ratings/static/ratings/`: 앱 소유 UI 자산
@@ -77,8 +78,7 @@ make check
 ## 정적 타입 계약
 
 - Pyrefly는 migration을 제외한 프로젝트 전체를 `default` preset으로 검사한다.
-  `score_rules.py`와 `services/`는 별도 `strict` 검사 대상이며, 향후 API 패키지도
-  생성되는 시점부터 `strict` 범위에 넣는다.
+  `score_rules.py`, `services/`, `api/`는 별도 `strict` 검사 대상이다.
 - 오류 수를 맞추기 위한 baseline, 파일 단위 대량 suppression, 규칙의 전역 비활성화는
   추가하지 않는다. 진단은 타입을 명확히 하거나 실제 결함을 고쳐 해결한다.
 - 런타임에서 의도적으로 잘못된 타입을 전달하는 음성 테스트에만 정확한 진단 코드를

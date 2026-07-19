@@ -146,6 +146,8 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "axes",
+    "rest_framework",
+    "drf_spectacular",
     "apps.ratings.apps.RatingsConfig",
 ]
 
@@ -272,6 +274,38 @@ CSRF_COOKIE_SECURE = not DEBUG
 
 LOGIN_URL = "login"
 LOGIN_REDIRECT_URL = "home"
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.ratings.api.authentication.SameOriginSessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_PARSER_CLASSES": [
+        "apps.ratings.api.parsers.BoundedJSONParser",
+    ],
+    "DEFAULT_RENDERER_CLASSES": [
+        "apps.ratings.api.renderers.EnvelopeJSONRenderer",
+    ],
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "EXCEPTION_HANDLER": "apps.ratings.api.exceptions.api_exception_handler",
+}
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": "우리 사이 API",
+    "DESCRIPTION": "두 참가자의 관계 점수 API",
+    "VERSION": "1.0.0",
+    "OAS_VERSION": "3.1.0",
+    "COMPONENT_SPLIT_REQUEST": True,
+    "ENUM_NAME_OVERRIDES": {
+        "ErrorResultType": ["ERROR"],
+        "RequestErrorType": ["REQUEST"],
+        "AuthenticationErrorType": ["AUTHENTICATION"],
+    },
+    "SERVE_INCLUDE_SCHEMA": False,
+    "SCHEMA_PATH_PREFIX": r"/api/v1",
+}
 
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", default=not DEBUG)

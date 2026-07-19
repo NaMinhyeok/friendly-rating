@@ -44,6 +44,7 @@ uv run --env-file .env python manage.py provision_participants --reconcile
 
 ```text
 apps/ratings/
+├── api/
 ├── migrations/
 ├── participant_provisioning/
 ├── services/
@@ -60,6 +61,18 @@ templates/
 도메인 테이블명은 `participant`, `relationship_score`, `score_change`,
 `push_device`입니다.
 
+## JSON API
+
+DRF 기반 API는 `/api/v1/` 아래에 두며 현재 점수 변경 endpoint는
+`POST /api/v1/score-changes/`입니다. 브라우저의 기존 Django 세션을 사용하고,
+변경 요청에는 같은 출처에서 얻은 `X-CSRFToken` 헤더가 필요합니다. 클라이언트가
+참가자 ID를 보내지 않고 로그인한 참가자의 outgoing score만 변경합니다.
+
+모든 API 응답은 `resultType`, `error`, `success`를 갖는 JSON envelope를 사용합니다.
+성공과 오류 branch는 서로 배타적이며 HTTP 상태 코드를 그대로 유지합니다. 생성된
+OpenAPI 3.1 문서는 `/api/schema/`에서 확인할 수 있습니다. 이 schema endpoint 자체는
+표준 OpenAPI 문서를 반환하므로 API envelope를 사용하지 않습니다.
+
 ## 품질 검사
 
 ```bash
@@ -72,14 +85,14 @@ make check
 `Makefile`은 사람이 기억하기 쉬운 얇은 진입점입니다. 부분 검사와 전체 검사의 실제
 구현은 `scripts/check` 한 곳에 있고, `make check`는 dependency lock, Ruff, Pyrefly,
 Django system/deploy checks, 기존 migration의 수정·삭제와 누락 migration, 전체
-pytest, production static collection을 실행합니다. 로컬과 GitHub Actions가 같은
-진입점을 사용합니다. `make test`와 전체 검사는 shell의 일반 `DATABASE_URL`을
-사용하지 않고 격리된 SQLite를 사용하며, 전체 검사의 static collection 출력은 임시
-디렉터리에만 만듭니다.
+pytest, OpenAPI 생성·검증, production static collection을 실행합니다. 로컬과
+GitHub Actions가 같은 진입점을 사용합니다. `make test`와 전체 검사는 shell의 일반
+`DATABASE_URL`을 사용하지 않고 격리된 SQLite를 사용하며, 전체 검사의 static
+collection 출력은 임시 디렉터리에만 만듭니다.
 
 `make typecheck`는 migration을 제외한 프로젝트 전체를 Pyrefly `default` preset으로
-검사하고, `score_rules.py`와 `services/`는 `strict`로 한 번 더 검사합니다. 향후 API
-패키지가 생기면 그 경계도 `strict` 범위에 포함합니다. 타입 오류를 숨기는 baseline,
+검사하고, `score_rules.py`, `services/`, `api/`는 `strict`로 한 번 더 검사합니다.
+타입 오류를 숨기는 baseline,
 대량 suppression과 전역 ignore는 사용하지 않습니다.
 
 테스트 러너는 `pytest`와 `pytest-django`를 사용합니다. DB가 필요 없는 규칙은
