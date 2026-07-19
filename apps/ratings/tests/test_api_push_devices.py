@@ -22,7 +22,7 @@ def _participant_client(participant):
     client.force_login(participant.user)
     home_response = client.get(reverse("home"))
     assert home_response.status_code == 200
-    csrf_token = csrf_token_from_form(home_response, reverse("change-score"))
+    csrf_token = csrf_token_from_form(home_response, reverse("logout"))
     return client, csrf_token
 
 

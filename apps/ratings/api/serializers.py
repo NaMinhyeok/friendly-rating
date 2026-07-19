@@ -12,7 +12,7 @@ from drf_spectacular.utils import (
 from rest_framework import serializers
 from rest_framework.settings import api_settings
 
-from ..models import ScoreChange
+from ..models import Participant, RelationshipScore, ScoreChange
 from ..services.push_devices import FIREBASE_INSTALLATION_ID_PATTERN
 from .contracts import ErrorCode, ErrorType, ResultType
 
@@ -173,6 +173,42 @@ class ScoreChangeDataSerializer(serializers.Serializer[ScoreChange]):
         max_value=100,
     )
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+
+
+class ParticipantSummarySerializer(serializers.Serializer[Participant]):
+    slot = serializers.IntegerField(read_only=True, min_value=1, max_value=2)
+    displayName = serializers.CharField(
+        source="display_name",
+        read_only=True,
+        max_length=30,
+    )
+
+
+class RelationshipScoreDataSerializer(serializers.Serializer[RelationshipScore]):
+    sourceParticipant = ParticipantSummarySerializer(
+        source="source_participant",
+        read_only=True,
+    )
+    targetParticipant = ParticipantSummarySerializer(
+        source="target_participant",
+        read_only=True,
+    )
+    currentScore = serializers.IntegerField(
+        source="current_score",
+        read_only=True,
+        min_value=0,
+        max_value=100,
+    )
+    updatedAt = serializers.DateTimeField(source="updated_at", read_only=True)
+    isMine = serializers.SerializerMethodField()
+
+    def get_isMine(self, score: RelationshipScore) -> bool:
+        participant_id = self.context.get("participant_id")
+        return score.source_participant_id == participant_id
+
+
+class RelationshipScoreListDataSerializer(serializers.Serializer[object]):
+    results = RelationshipScoreDataSerializer(many=True)
 
 
 class PushDeviceRequestSerializer(StrictRequestSerializer):
@@ -365,6 +401,20 @@ class ForbiddenErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     )
 
 
+class ReadForbiddenErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = PolymorphicProxySerializer(
+        component_name="ReadForbiddenApiError",
+        serializers={
+            ErrorCode.AUTHENTICATION_REQUIRED.value: (
+                AuthenticationRequiredApiErrorSerializer
+            ),
+            ErrorCode.PARTICIPANT_REQUIRED.value: ParticipantRequiredApiErrorSerializer,
+        },
+        resource_type_field_name="errorCode",
+        many=False,
+    )
+
+
 class NotAcceptableErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     error = NotAcceptableApiErrorSerializer()
 
@@ -389,6 +439,12 @@ class ScoreChangeSuccessEnvelopeSerializer(serializers.Serializer[object]):
     resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
     error = NullOnlyField()
     success = ScoreChangeDataSerializer()
+
+
+class RelationshipScoreListSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = RelationshipScoreListDataSerializer()
 
 
 class PushDeviceRegisteredSuccessEnvelopeSerializer(serializers.Serializer[object]):
