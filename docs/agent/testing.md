@@ -61,9 +61,6 @@
 - DRF API는 same-origin session 인증, 참가자 권한, CSRF, content type과
   parser 실패를 공개 URL에서 검증한다. 성공과 오류 응답은 `resultType`에 맞춰
   `error`와 `success`가 배타적이고 HTTP 상태 코드가 유지되는지 확인한다.
-- legacy JSON endpoint를 새 DRF API와 함께 유지하는 동안에는 legacy status/body와
-  신규 envelope를 각각 공개 URL에서 검증하고, 두 adapter가 공유 service의 최종 DB
-  상태를 동일하게 보존하는지 확인한다.
 - API mutation은 렌더링된 실제 CSRF token과 `Origin`을 사용하는 테스트를 포함하고,
   비로그인·CSRF 실패·비참가자·잘못된 입력에서 DB가 바뀌지 않는지 확인한다.
 - 목록 API는 모든 형태가 `success.results`를 사용하고 page/cursor metadata가

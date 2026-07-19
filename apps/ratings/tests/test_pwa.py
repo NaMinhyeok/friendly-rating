@@ -40,10 +40,13 @@ def test_manifest_declares_standalone_app_and_required_icons():
 
 def test_service_worker_is_available_at_its_public_root_path(client):
     response = client.get("/service-worker.js")
+    body = response.content.decode()
 
     assert response.status_code == 200
     assert response.headers["Content-Type"] == "application/javascript"
     assert response.headers["Service-Worker-Allowed"] == "/"
+    assert "static-v2" in body
+    assert "static-v1" not in body
 
 
 @pytest.mark.django_db
@@ -91,14 +94,6 @@ def test_notification_client_receives_only_public_configuration(
     assertContains(
         response,
         'data-unregister-url="/api/v1/push-devices/unregister/"',
-    )
-    assertNotContains(
-        response,
-        'data-register-url="/notifications/devices/register/"',
-    )
-    assertNotContains(
-        response,
-        'data-unregister-url="/notifications/devices/unregister/"',
     )
     assertContains(response, "test-project")
     assertNotContains(response, "private_key")

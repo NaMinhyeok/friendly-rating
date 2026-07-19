@@ -100,8 +100,6 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
         "/api/v1/push-devices/unregister/",
         "/api/v1/score-changes/",
     }
-    assert "/notifications/devices/register/" not in document["paths"]
-    assert "/notifications/devices/unregister/" not in document["paths"]
 
 
 def test_score_change_operation_declares_session_csrf_json_and_status_contract(client):
