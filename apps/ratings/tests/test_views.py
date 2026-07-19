@@ -19,7 +19,7 @@ class BasicViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
 
-    @patch("ratings.views.database_is_ready", return_value=False)
+    @patch("apps.ratings.views.system.database_is_ready", return_value=False)
     def test_health_check_reports_database_unavailability(self, _probe):
         response = self.client.get(reverse("health"))
 
@@ -27,7 +27,7 @@ class BasicViewTests(TestCase):
         self.assertEqual(response.content, b"unavailable")
         self.assertEqual(response.headers["Cache-Control"], "no-store")
 
-    @patch("ratings.views.database_is_ready")
+    @patch("apps.ratings.views.system.database_is_ready")
     def test_health_check_rejects_non_get_requests(self, probe):
         response = self.client.post(reverse("health"))
 

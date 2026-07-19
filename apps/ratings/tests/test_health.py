@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 from django.db import InterfaceError, OperationalError
 from django.test import SimpleTestCase
 
-from ratings.health import database_is_ready
+from ..health import database_is_ready
 
 
 class DatabaseReadinessTests(SimpleTestCase):

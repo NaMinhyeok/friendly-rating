@@ -1,8 +1,7 @@
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from ratings.models import ScoreChange
-
+from ..models import ScoreChange
 from .factories import create_participant_pair
 
 

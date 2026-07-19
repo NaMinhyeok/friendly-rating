@@ -37,6 +37,29 @@ uv run --env-file .env python manage.py provision_participants --reconcile
 복구 과정에서도 참가자·관계 점수의 기존 PK, 현재 점수, 변경 이력과 푸시 기기
 연결을 보존합니다. 사용자 소유권이 모호한 충돌은 수동 확인을 요구합니다.
 
+## 프로젝트 구조
+
+도메인 앱은 `apps/ratings/` 아래에 모읍니다. 앱 내부 템플릿과 정적 파일도 앱이
+소유하고, 프로젝트 전체에서 공유하는 설정과 템플릿만 루트에 둡니다.
+
+```text
+apps/ratings/
+├── migrations/
+├── participant_provisioning/
+├── services/
+├── static/ratings/
+├── templates/ratings/
+├── tests/
+└── views/
+config/
+templates/
+```
+
+파이썬 경로는 `apps.ratings`이지만 Django의 논리 앱 라벨은 기존 `ratings`를
+유지합니다. 따라서 마이그레이션 이력, content type, admin URL은 바뀌지 않으며
+도메인 테이블명은 `participant`, `relationship_score`, `score_change`,
+`push_device`입니다.
+
 ## 품질 검사
 
 ```bash

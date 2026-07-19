@@ -1,9 +1,8 @@
 from django.core.exceptions import ValidationError
 from django.test import TestCase
 
-from ratings.models import Participant, ScoreChange
-from ratings.services import change_relationship_score
-
+from ..models import Participant, ScoreChange
+from ..services import change_relationship_score
 from .factories import create_participant_pair
 
 

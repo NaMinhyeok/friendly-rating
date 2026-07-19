@@ -1,8 +1,7 @@
 from django.test import TestCase
 from django.urls import reverse
 
-from ratings.models import ScoreChange
-
+from ..models import ScoreChange
 from .factories import create_participant_pair
 
 

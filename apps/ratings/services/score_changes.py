@@ -3,9 +3,9 @@ from functools import partial
 
 from django.db import transaction
 
-from .models import Participant, RelationshipScore, ScoreChange
-from .notifications import send_score_change_notification
-from .score_rules import calculate_resulting_score, prepare_score_change
+from ..models import Participant, RelationshipScore, ScoreChange
+from ..notifications import send_score_change_notification
+from ..score_rules import calculate_resulting_score, prepare_score_change
 
 logger = logging.getLogger(__name__)
 
