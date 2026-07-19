@@ -142,6 +142,42 @@ if PUSH_NOTIFICATIONS_ENABLED and not PUSH_NOTIFICATIONS_AVAILABLE:
     )
 
 
+# Private media uploads (Cloudflare R2)
+
+MEDIA_UPLOADS_ENABLED = env_bool("MEDIA_UPLOADS_ENABLED")
+R2_ENDPOINT_URL = os.getenv("R2_ENDPOINT_URL", "").strip().rstrip("/")
+R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID", "").strip()
+R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY", "").strip()
+R2_BUCKET_NAME = os.getenv("R2_BUCKET_NAME", "").strip()
+R2_REGION_NAME = os.getenv("R2_REGION_NAME", "auto").strip() or "auto"
+MEDIA_UPLOAD_URL_TTL_SECONDS = int(os.getenv("MEDIA_UPLOAD_URL_TTL_SECONDS", "900"))
+MEDIA_DOWNLOAD_URL_TTL_SECONDS = int(os.getenv("MEDIA_DOWNLOAD_URL_TTL_SECONDS", "300"))
+
+_r2_endpoint = urlsplit(R2_ENDPOINT_URL)
+_r2_configuration_is_valid = (
+    _r2_endpoint.scheme == "https"
+    and bool(_r2_endpoint.netloc)
+    and not _r2_endpoint.query
+    and not _r2_endpoint.fragment
+    and all(
+        (
+            R2_ACCESS_KEY_ID,
+            R2_SECRET_ACCESS_KEY,
+            R2_BUCKET_NAME,
+            R2_REGION_NAME,
+        )
+    )
+    and 60 <= MEDIA_UPLOAD_URL_TTL_SECONDS <= 3600
+    and 60 <= MEDIA_DOWNLOAD_URL_TTL_SECONDS <= 3600
+)
+MEDIA_UPLOADS_AVAILABLE = MEDIA_UPLOADS_ENABLED and _r2_configuration_is_valid
+if MEDIA_UPLOADS_ENABLED and not MEDIA_UPLOADS_AVAILABLE:
+    raise ImproperlyConfigured(
+        "Media uploads are enabled but the R2 endpoint, bucket credentials, "
+        "bucket name, region, or signed URL TTL settings are invalid."
+    )
+
+
 # Application definition
 
 INSTALLED_APPS = [

@@ -187,6 +187,44 @@ function descendantText(element) {
   ].join("");
 }
 
+function readAttachmentValidation(fileName) {
+  const fixture = JSON.stringify({ fileName });
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+    URL,
+    window: { location: { origin: "https://friendly.test" } },
+  };
+
+  vm.runInNewContext(
+    `${historySource}
+      {
+        const fixture = ${fixture};
+        globalThis.attachmentIsValid = validateAttachments([{
+          id: 1,
+          kind: "image",
+          fileName: fixture.fileName,
+          contentType: "image/jpeg",
+          byteSize: 512,
+          contentUrl: "/media/1/content/",
+        }]);
+      }`,
+    sandbox,
+    { filename: historyScriptPath },
+  );
+
+  return sandbox.attachmentIsValid;
+}
+
+test("history measures attachment filenames in Unicode code points", () => {
+  assert.equal(readAttachmentValidation(`${"😀".repeat(128)}.jpg`), true);
+  assert.equal(readAttachmentValidation("가".repeat(256)), false);
+});
+
 test("history fetches and safely renders the requested page with navigation", async () => {
   const item = historyItem();
   const harness = createHistoryHarness({

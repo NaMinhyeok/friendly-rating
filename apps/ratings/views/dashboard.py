@@ -21,6 +21,7 @@ def get_dashboard_context():
             else ""
         ),
         "push_notifications_enabled": settings.PUSH_NOTIFICATIONS_AVAILABLE,
+        "media_uploads_available": settings.MEDIA_UPLOADS_AVAILABLE,
     }
 
 

@@ -103,6 +103,37 @@ def test_score_change_thread_is_a_fresh_api_backed_shell(client, participant_pai
     assert "화면에 미리 넣지 않을 이유" not in content
 
 
+def test_media_controls_are_only_rendered_when_private_storage_is_available(
+    client,
+    participant_pair,
+    settings,
+):
+    change = _create_change(participant_pair, 1)
+    _login(client, participant_pair.first)
+
+    settings.MEDIA_UPLOADS_AVAILABLE = False
+    dashboard_without_media = client.get(reverse("home")).content.decode()
+    thread_without_media = client.get(
+        reverse("score-change-thread", kwargs={"score_change_id": change.pk})
+    ).content.decode()
+
+    assert "data-media-uploads-url" not in dashboard_without_media
+    assert "data-score-media-input" not in dashboard_without_media
+    assert "data-media-uploads-url" not in thread_without_media
+    assert "data-comment-media-input" not in thread_without_media
+
+    settings.MEDIA_UPLOADS_AVAILABLE = True
+    dashboard_with_media = client.get(reverse("home")).content.decode()
+    thread_with_media = client.get(
+        reverse("score-change-thread", kwargs={"score_change_id": change.pk})
+    ).content.decode()
+
+    assert 'data-media-uploads-url="/api/v1/media-uploads/"' in dashboard_with_media
+    assert "data-score-media-input" in dashboard_with_media
+    assert 'data-media-uploads-url="/api/v1/media-uploads/"' in thread_with_media
+    assert "data-comment-media-input" in thread_with_media
+
+
 def test_score_change_thread_requires_login_and_preserves_destination(
     client,
     participant_pair,

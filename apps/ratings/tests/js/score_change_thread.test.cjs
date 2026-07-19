@@ -74,6 +74,7 @@ function comment({
   authorName = "둘째 <script>",
   content = '<img src=x onerror="globalThis.compromised=true">고마워',
   isMine = false,
+  attachments = [],
 } = {}) {
   return {
     id,
@@ -81,6 +82,7 @@ function comment({
     content,
     createdAt: "2026-07-19T01:24:00Z",
     isMine,
+    attachments,
   };
 }
 
@@ -99,6 +101,7 @@ function threadPayload({ comments = [comment()] } = {}) {
       createdAt: "2026-07-19T01:23:00Z",
       commentCount: comments.length,
       threadUrl: "/history/31/",
+      attachments: [],
       comments,
     },
   };
@@ -107,6 +110,7 @@ function threadPayload({ comments = [comment()] } = {}) {
 function createThreadHarness({
   fetchImplementation,
   search = "?from=push",
+  withMedia = false,
 } = {}) {
   const content = new FakeElement();
   const status = new FakeElement();
@@ -123,6 +127,9 @@ function createThreadHarness({
   const formStatus = new FakeElement();
   const characterCount = new FakeElement();
   const csrf = new FakeElement({ value: "rendered-csrf-token" });
+  const mediaInput = new FakeElement();
+  const mediaSelection = new FakeElement({ hidden: true });
+  const mediaStatus = new FakeElement();
 
   form.selectors = {
     "[data-comment-character-current]": characterCount,
@@ -132,10 +139,16 @@ function createThreadHarness({
     "[name=content]": textarea,
     "[name=csrfmiddlewaretoken]": csrf,
   };
+  if (withMedia) {
+    form.selectors["[data-comment-media-input]"] = mediaInput;
+    form.selectors["[data-comment-media-selection]"] = mediaSelection;
+    form.selectors["[data-comment-media-status]"] = mediaStatus;
+  }
 
   const root = new FakeElement({
     dataset: {
       commentsUrl: "/api/v1/score-changes/31/comments/",
+      ...(withMedia ? { mediaUploadsUrl: "/api/v1/media-uploads/" } : {}),
       threadUrl: "/api/v1/score-changes/31/",
     },
   });
@@ -212,6 +225,9 @@ function createThreadHarness({
     form,
     formStatus,
     globalListeners,
+    mediaInput,
+    mediaSelection,
+    mediaStatus,
     refreshButton,
     sandbox,
     status,
@@ -234,6 +250,88 @@ function descendantText(element) {
     ...element.children.flatMap((child) => descendantText(child)),
   ].join("");
 }
+
+function readMediaUploadResetDecision({ status, errorCode }) {
+  const fixture = JSON.stringify({ status, errorCode });
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+  };
+
+  vm.runInNewContext(
+    `${threadSource}
+      {
+        const fixture = ${fixture};
+        globalThis.mediaUploadResetDecision = shouldResetMediaUploads(
+          new ApiRequestError(fixture.status, {
+            errorCode: fixture.errorCode,
+            reason: "test",
+            details: [],
+          }),
+        );
+      }`,
+    sandbox,
+    { filename: threadScriptPath },
+  );
+
+  return sandbox.mediaUploadResetDecision;
+}
+
+function readAttachmentValidation(fileName) {
+  const fixture = JSON.stringify({ fileName });
+  const sandbox = {
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+    URL,
+    window: { location: { origin: "https://friendly.test" } },
+  };
+
+  vm.runInNewContext(
+    `${threadSource}
+      {
+        const fixture = ${fixture};
+        globalThis.attachmentIsValid = validateAttachment({
+          id: 1,
+          kind: "image",
+          fileName: fixture.fileName,
+          contentType: "image/jpeg",
+          byteSize: 512,
+          contentUrl: "/media/1/content/",
+        });
+      }`,
+    sandbox,
+    { filename: threadScriptPath },
+  );
+
+  return sandbox.attachmentIsValid;
+}
+
+test("threads measure attachment filenames in Unicode code points", () => {
+  assert.equal(readAttachmentValidation(`${"😀".repeat(128)}.jpg`), true);
+  assert.equal(readAttachmentValidation("가".repeat(256)), false);
+});
+
+test("comments reset upload IDs that can no longer be attached", () => {
+  for (const [status, errorCode] of [
+    [409, "MEDIA_UPLOAD_CONFLICT"],
+    [404, "NOT_FOUND"],
+    [403, "PERMISSION_DENIED"],
+  ]) {
+    assert.equal(readMediaUploadResetDecision({ status, errorCode }), true);
+  }
+  assert.equal(
+    readMediaUploadResetDecision({ status: 400, errorCode: "INVALID_INPUT" }),
+    false,
+  );
+});
 
 test("thread fetches and safely renders the score change and comments", async () => {
   const harness = createThreadHarness();
@@ -364,6 +462,134 @@ test("comment submission sends CSRF once and appends the created comment", async
     harness.fetchCalls.filter((call) => call.options.method !== "POST").length,
     2,
   );
+});
+
+test("a media-only comment uploads directly and renders the attachment safely", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000001";
+  const attachment = {
+    id: uploadId,
+    kind: "image",
+    fileName: '<script>globalThis.compromised=true</script>.jpg',
+    contentType: "image/jpeg",
+    byteSize: 512,
+    contentUrl: `/media/${uploadId}/content/`,
+  };
+  const createdComment = comment({
+    id: 94,
+    authorName: "첫째",
+    content: "",
+    isMine: true,
+    attachments: [attachment],
+  });
+  const harness = createThreadHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(
+          jsonResponse(200, threadPayload({ comments: [] })),
+        );
+      }
+      if (url === "/api/v1/media-uploads/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/object",
+              requiredHeaders: { "Content-Type": "image/jpeg" },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/object") {
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/complete/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              id: attachment.id,
+              kind: attachment.kind,
+              fileName: attachment.fileName,
+              contentType: attachment.contentType,
+              byteSize: attachment.byteSize,
+            },
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/31/comments/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: createdComment,
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url} ${options.method || "GET"}`);
+    },
+  });
+  await settleAsyncWork();
+
+  const file = {
+    name: '<script>globalThis.compromised=true</script>.jpg',
+    size: 512,
+    type: "image/jpeg",
+  };
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  const initiateCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/media-uploads/",
+  );
+  assert.deepEqual(JSON.parse(initiateCall.options.body), {
+    purpose: "comment",
+    kind: "image",
+    fileName: file.name,
+    contentType: "image/jpeg",
+    byteSize: 512,
+    scoreChangeId: 31,
+  });
+  assert.equal(
+    initiateCall.options.headers["X-CSRFToken"],
+    "rendered-csrf-token",
+  );
+
+  const directPut = harness.fetchCalls.find(
+    (call) => call.url === "https://r2.example.test/pending/object",
+  );
+  assert.equal(directPut.options.method, "PUT");
+  assert.equal(directPut.options.body, file);
+  assert.deepEqual(directPut.options.headers, { "Content-Type": "image/jpeg" });
+  assert.equal(directPut.options.credentials, "omit");
+
+  const completeCall = harness.fetchCalls.find(
+    (call) => call.url === `/api/v1/media-uploads/${uploadId}/complete/`,
+  );
+  assert.equal(completeCall.options.body, "{}");
+  const commentCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/score-changes/31/comments/",
+  );
+  assert.deepEqual(JSON.parse(commentCall.options.body), {
+    content: "",
+    mediaUploadIds: [uploadId],
+  });
+
+  assert.equal(harness.commentList.children.length, 1);
+  assert.equal(harness.commentCount.textContent, "1");
+  assert.match(descendantText(harness.commentList), /<script>/);
+  assert.equal(harness.createdTags.includes("img"), true);
+  assert.equal(harness.createdTags.includes("script"), false);
+  assert.equal(harness.createdTags.includes("svg"), false);
+  assert.equal(harness.sandbox.compromised, undefined);
+  assert.equal(harness.formStatus.textContent, "댓글을 남겼어요.");
+  assert.equal(harness.textarea.value, "");
 });
 
 test("a score refresh started before submission cannot erase the created comment", async () => {

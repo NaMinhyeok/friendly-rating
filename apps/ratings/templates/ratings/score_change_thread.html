@@ -15,6 +15,7 @@
     data-score-thread-root
     data-thread-url="{% url 'api-v1:score-change-detail' score_change_id=score_change_id %}"
     data-comments-url="{% url 'api-v1:score-change-comment-list' score_change_id=score_change_id %}"
+    {% if media_uploads_available %}data-media-uploads-url="{% url 'api-v1:media-upload-list' %}"{% endif %}
 >
     <noscript>
         <section class="surface loading-state loading-state--error">
@@ -58,10 +59,29 @@
                         id="comment-content"
                         name="content"
                         maxlength="500"
-                        placeholder="이 마음에 답장을 남겨 보세요"
-                        required
+                        placeholder="답장을 쓰거나 사진·영상을 남겨 보세요"
                         disabled
                     ></textarea>
+                    {% if media_uploads_available %}
+                    <div class="comment-media-field" data-comment-media-field>
+                        <input
+                            class="media-file-input"
+                            id="id_comment_media"
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,video/mp4,video/webm,video/quicktime"
+                            multiple
+                            data-comment-media-input
+                            disabled
+                        >
+                        <label class="media-picker media-picker--compact" for="id_comment_media">
+                            <span aria-hidden="true">＋</span>
+                            사진·영상 추가
+                        </label>
+                        <p class="field-help">사진은 최대 4장(장당 10MB), 영상은 1개(100MB)까지 올릴 수 있어요.</p>
+                        <div class="media-selection" data-comment-media-selection hidden></div>
+                        <p class="media-status" data-comment-media-status role="status" aria-live="polite"></p>
+                    </div>
+                    {% endif %}
                     <p class="form-status" data-comment-form-status role="status" aria-live="polite"></p>
                     <button class="button button--primary button--full" type="submit" data-comment-submit disabled>
                         <span data-comment-submit-label>댓글 남기기</span>

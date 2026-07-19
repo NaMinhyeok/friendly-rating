@@ -1,5 +1,9 @@
-from typing import Never, cast, override
+from __future__ import annotations
 
+from typing import Never, cast, override
+from uuid import UUID
+
+from django.conf import settings
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.paginator import EmptyPage, Paginator
 from django.db.models import Count, Prefetch, Q, QuerySet
@@ -7,33 +11,62 @@ from django.shortcuts import get_object_or_404
 from drf_spectacular.openapi import AutoSchema
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import NotFound, ValidationError
+from rest_framework.exceptions import (
+    APIException,
+    NotFound,
+    PermissionDenied,
+    ValidationError,
+)
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..models import (
+    MediaAttachment,
     Participant,
     RelationshipScore,
     ScoreChange,
     ScoreChangeComment,
 )
 from ..services import (
+    MediaUploadError,
+    MediaUploadNotFoundError,
+    MediaUploadPermissionError,
+    MediaUploadStateError,
+    MediaUploadStorageError,
+    MediaUploadValidationError,
     ScoreUnchangedError,
     add_score_change_comment,
     change_relationship_score,
+    complete_media_upload,
+    initiate_media_upload,
     register_participant_push_device,
     set_relationship_score,
     unregister_participant_push_device,
 )
-from .exceptions import ParticipantRequired, ScoreOutOfRange, ScoreUnchanged
+from .contracts import ErrorCode, ErrorType
+from .exceptions import (
+    ApiProblem,
+    ParticipantRequired,
+    ScoreOutOfRange,
+    ScoreUnchanged,
+)
 from .serializers import (
     BadRequestErrorEnvelopeSerializer,
+    CompletedMediaUploadDataSerializer,
+    CompletedMediaUploadSuccessEnvelopeSerializer,
     DeltaScoreChangeCommand,
     ForbiddenErrorEnvelopeSerializer,
+    InitiatedMediaUploadDataSerializer,
     InternalServerErrorEnvelopeSerializer,
     InvalidInputErrorEnvelopeSerializer,
+    MediaForbiddenErrorEnvelopeSerializer,
+    MediaUploadCompleteRequestSerializer,
+    MediaUploadConflictErrorEnvelopeSerializer,
+    MediaUploadInitiatedSuccessEnvelopeSerializer,
+    MediaUploadInitiateRequestSerializer,
+    MediaUploadsUnavailableErrorEnvelopeSerializer,
     NotAcceptableErrorEnvelopeSerializer,
     NotFoundErrorEnvelopeSerializer,
     PushDeviceRegisteredSuccessEnvelopeSerializer,
@@ -68,6 +101,22 @@ CSRF_HEADER_PARAMETER = OpenApiParameter(
 SCORE_CHANGE_PAGE_SIZE = 20
 
 
+class MediaUploadConflict(ApiProblem):
+    status_code = status.HTTP_409_CONFLICT
+    default_code = "media_upload_conflict"
+    error_type = ErrorType.CONFLICT
+    error_code = ErrorCode.MEDIA_UPLOAD_CONFLICT
+    reason = "업로드 상태가 현재 작업과 맞지 않습니다."
+
+
+class MediaUploadServiceUnavailable(ApiProblem):
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+    default_code = "media_upload_service_unavailable"
+    error_type = ErrorType.SERVER
+    error_code = ErrorCode.MEDIA_UPLOADS_UNAVAILABLE
+    reason = "파일 업로드 서비스를 지금 사용할 수 없습니다."
+
+
 class ScoreChangeAutoSchema(AutoSchema):
     @override
     def _get_request_body(
@@ -85,6 +134,47 @@ def _participant_for_request(request: Request) -> Participant:
         return Participant.objects.get(user_id=request.user.pk)
     except Participant.DoesNotExist as error:
         raise ParticipantRequired() from error
+
+
+def _ensure_media_uploads_available() -> None:
+    if not getattr(settings, "MEDIA_UPLOADS_AVAILABLE", False):
+        raise MediaUploadServiceUnavailable()
+
+
+def _raise_media_upload_api_error(error: MediaUploadError) -> Never:
+    reason = str(error).strip() or None
+    if isinstance(error, MediaUploadValidationError):
+        raise ValidationError(reason or "업로드 정보를 확인해 주세요.") from error
+    if isinstance(error, MediaUploadNotFoundError):
+        raise NotFound() from error
+    if isinstance(error, MediaUploadPermissionError):
+        raise PermissionDenied() from error
+    if isinstance(error, MediaUploadStateError):
+        raise MediaUploadConflict(reason=reason) from error
+    if isinstance(error, MediaUploadStorageError):
+        raise MediaUploadServiceUnavailable() from error
+    raise APIException() from error
+
+
+def _score_attachment_prefetch() -> Prefetch[str]:
+    return Prefetch(
+        "media_attachments",
+        queryset=MediaAttachment.objects.filter(
+            purpose=MediaAttachment.Purpose.SCORE_CHANGE,
+            status=MediaAttachment.Status.ATTACHED,
+        ).order_by("position", "created_at", "id"),
+        to_attr="_score_media_attachments",
+    )
+
+
+def _comment_attachment_prefetch() -> Prefetch[str]:
+    return Prefetch(
+        "media_attachments",
+        queryset=MediaAttachment.objects.filter(
+            status=MediaAttachment.Status.ATTACHED,
+        ).order_by("position", "created_at", "id"),
+        to_attr="_comment_media_attachments",
+    )
 
 
 def _score_changes_for_participant(
@@ -144,6 +234,126 @@ class RelationshipScoreListView(APIView):
         return response
 
 
+class MediaUploadInitiateView(APIView):
+    schema = ScoreChangeAutoSchema()
+
+    @extend_schema(
+        operation_id="initiateMediaUpload",
+        summary="파일 직접 업로드 준비",
+        description=(
+            "현재 참가자가 비공개 저장소에 이미지 또는 짧은 영상을 직접 업로드할 "
+            "수 있도록 만료 시간이 짧은 URL을 발급합니다. 댓글 첨부는 현재 참가자가 "
+            "접근할 수 있는 점수 변경 ID가 필요하고, 점수 변경 이유에는 이미지만 "
+            "첨부할 수 있습니다."
+        ),
+        tags=("mediaUploads",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=MediaUploadInitiateRequestSerializer,
+        responses={
+            201: MediaUploadInitiatedSuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: MediaForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            409: MediaUploadConflictErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+            503: MediaUploadsUnavailableErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request) -> Response:
+        participant = _participant_for_request(request)
+        _ensure_media_uploads_available()
+        serializer = MediaUploadInitiateRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        command = serializer.to_command()
+
+        score_change = None
+        if command.score_change_id is not None:
+            score_change = get_object_or_404(
+                _score_changes_for_participant(participant),
+                pk=command.score_change_id,
+            )
+
+        purpose = (
+            MediaAttachment.Purpose.SCORE_CHANGE
+            if command.purpose == "scoreChange"
+            else MediaAttachment.Purpose.COMMENT
+        )
+        kind = (
+            MediaAttachment.Kind.IMAGE
+            if command.kind == "image"
+            else MediaAttachment.Kind.VIDEO
+        )
+        try:
+            initiated = initiate_media_upload(
+                uploader=participant,
+                purpose=purpose,
+                kind=kind,
+                original_name=command.original_name,
+                content_type=command.content_type,
+                expected_size=command.expected_size,
+                score_change=score_change,
+            )
+        except MediaUploadError as error:
+            _raise_media_upload_api_error(error)
+
+        response = Response(
+            InitiatedMediaUploadDataSerializer(initiated).data,
+            status=status.HTTP_201_CREATED,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+
+class MediaUploadCompleteView(APIView):
+    schema = ScoreChangeAutoSchema()
+
+    @extend_schema(
+        operation_id="completeMediaUpload",
+        summary="파일 직접 업로드 완료 확인",
+        description=(
+            "비공개 저장소에 직접 전송한 파일의 형식과 크기를 확인하고 첨부 가능한 "
+            "상태로 전환합니다. 빈 JSON 객체와 CSRF 토큰을 전송해야 합니다."
+        ),
+        tags=("mediaUploads",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=MediaUploadCompleteRequestSerializer,
+        responses={
+            200: CompletedMediaUploadSuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: MediaForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            409: MediaUploadConflictErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+            503: MediaUploadsUnavailableErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request, upload_id: UUID) -> Response:
+        participant = _participant_for_request(request)
+        _ensure_media_uploads_available()
+        serializer = MediaUploadCompleteRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        try:
+            completed = complete_media_upload(
+                upload_id=upload_id,
+                uploader=participant,
+            )
+        except MediaUploadError as error:
+            _raise_media_upload_api_error(error)
+
+        response = Response(
+            CompletedMediaUploadDataSerializer(completed.attachment).data
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+
 class ScoreChangeListView(APIView):
     schema = ScoreChangeAutoSchema()
 
@@ -175,9 +385,13 @@ class ScoreChangeListView(APIView):
         if not isinstance(page_number, int) or isinstance(page_number, bool):
             raise RuntimeError("Validated page number is not an integer.")
 
-        changes = _score_changes_for_participant(participant).order_by(
-            "-created_at",
-            "-pk",
+        changes = (
+            _score_changes_for_participant(participant)
+            .prefetch_related(_score_attachment_prefetch())
+            .order_by(
+                "-created_at",
+                "-pk",
+            )
         )
         paginator = Paginator(changes, SCORE_CHANGE_PAGE_SIZE)
         try:
@@ -215,12 +429,14 @@ class ScoreChangeListView(APIView):
         responses={
             201: ScoreChangeSuccessEnvelopeSerializer,
             400: BadRequestErrorEnvelopeSerializer,
-            403: ForbiddenErrorEnvelopeSerializer,
+            403: MediaForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
             406: NotAcceptableErrorEnvelopeSerializer,
             409: ScoreOutOfRangeErrorEnvelopeSerializer,
             413: RequestBodyTooLargeErrorEnvelopeSerializer,
             415: UnsupportedMediaTypeErrorEnvelopeSerializer,
             500: InternalServerErrorEnvelopeSerializer,
+            503: MediaUploadsUnavailableErrorEnvelopeSerializer,
         },
     )
     def post(self, request: Request) -> Response:
@@ -228,6 +444,8 @@ class ScoreChangeListView(APIView):
         serializer = ScoreChangeRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         command = serializer.to_command()
+        if command.media_upload_ids:
+            _ensure_media_uploads_available()
 
         try:
             if isinstance(command, DeltaScoreChangeCommand):
@@ -235,6 +453,7 @@ class ScoreChangeListView(APIView):
                     source_participant=participant,
                     delta=command.delta,
                     reason=command.reason,
+                    media_upload_ids=command.media_upload_ids,
                 )
             else:
                 try:
@@ -242,6 +461,7 @@ class ScoreChangeListView(APIView):
                         source_participant=participant,
                         target_score=command.target_score,
                         reason=command.reason,
+                        media_upload_ids=command.media_upload_ids,
                     )
                 except ScoreUnchangedError as error:
                     raise ScoreUnchanged(
@@ -250,6 +470,8 @@ class ScoreChangeListView(APIView):
         except DjangoValidationError as error:
             reason = error.messages[0] if error.messages else None
             raise ScoreOutOfRange(reason=reason) from error
+        except MediaUploadError as error:
+            _raise_media_upload_api_error(error)
 
         response_serializer = ScoreChangeDataSerializer(change)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
@@ -276,12 +498,13 @@ class ScoreChangeDetailView(APIView):
         participant = _participant_for_request(request)
         change = get_object_or_404(
             _score_changes_for_participant(participant).prefetch_related(
+                _score_attachment_prefetch(),
                 Prefetch(
                     "comments",
-                    queryset=ScoreChangeComment.objects.select_related(
-                        "author"
-                    ).order_by("created_at", "pk"),
-                )
+                    queryset=ScoreChangeComment.objects.select_related("author")
+                    .prefetch_related(_comment_attachment_prefetch())
+                    .order_by("created_at", "pk"),
+                ),
             ),
             pk=score_change_id,
         )
@@ -295,6 +518,8 @@ class ScoreChangeDetailView(APIView):
 
 
 class ScoreChangeCommentCreateView(APIView):
+    schema = ScoreChangeAutoSchema()
+
     @extend_schema(
         operation_id="createScoreChangeComment",
         summary="점수 변경에 댓글 작성",
@@ -308,12 +533,14 @@ class ScoreChangeCommentCreateView(APIView):
         responses={
             201: ScoreChangeCommentSuccessEnvelopeSerializer,
             400: BadRequestErrorEnvelopeSerializer,
-            403: ForbiddenErrorEnvelopeSerializer,
+            403: MediaForbiddenErrorEnvelopeSerializer,
             404: NotFoundErrorEnvelopeSerializer,
             406: NotAcceptableErrorEnvelopeSerializer,
+            409: MediaUploadConflictErrorEnvelopeSerializer,
             413: RequestBodyTooLargeErrorEnvelopeSerializer,
             415: UnsupportedMediaTypeErrorEnvelopeSerializer,
             500: InternalServerErrorEnvelopeSerializer,
+            503: MediaUploadsUnavailableErrorEnvelopeSerializer,
         },
     )
     def post(self, request: Request, score_change_id: int) -> Response:
@@ -325,15 +552,20 @@ class ScoreChangeCommentCreateView(APIView):
         serializer = ScoreChangeCommentRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         command = serializer.to_command()
+        if command.media_upload_ids:
+            _ensure_media_uploads_available()
 
         try:
             comment = add_score_change_comment(
                 score_change=change,
                 author=participant,
                 content=command.content,
+                media_upload_ids=command.media_upload_ids,
             )
         except DjangoValidationError as error:
             raise ValidationError({"content": error.messages}) from error
+        except MediaUploadError as error:
+            _raise_media_upload_api_error(error)
 
         response_serializer = ScoreChangeCommentDataSerializer(
             comment,

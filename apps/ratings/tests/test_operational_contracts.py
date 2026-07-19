@@ -27,6 +27,12 @@ def _load_settings_with_railway_marker(marker_name: str) -> dict[str, object]:
     for name in (
         *_RAILWAY_ENVIRONMENT_MARKERS,
         "DEBUG",
+        "MEDIA_UPLOADS_ENABLED",
+        "R2_ACCESS_KEY_ID",
+        "R2_BUCKET_NAME",
+        "R2_ENDPOINT_URL",
+        "R2_REGION_NAME",
+        "R2_SECRET_ACCESS_KEY",
         "RAILWAY_PUBLIC_DOMAIN",
         "SECURE_HSTS_SECONDS",
         "SECURE_SSL_REDIRECT",
@@ -71,6 +77,50 @@ print(json.dumps({
     return json.loads(completed.stdout)
 
 
+def _load_media_settings(overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    for name in (
+        "MEDIA_DOWNLOAD_URL_TTL_SECONDS",
+        "MEDIA_UPLOADS_ENABLED",
+        "MEDIA_UPLOAD_URL_TTL_SECONDS",
+        "R2_ACCESS_KEY_ID",
+        "R2_BUCKET_NAME",
+        "R2_ENDPOINT_URL",
+        "R2_REGION_NAME",
+        "R2_SECRET_ACCESS_KEY",
+    ):
+        environment.pop(name, None)
+    environment.update(
+        {
+            "DEBUG": "True",
+            "FIREBASE_SERVICE_ACCOUNT_JSON": "",
+            "FIREBASE_VAPID_PUBLIC_KEY": "",
+            "FIREBASE_WEB_CONFIG_JSON": "{}",
+            "PUSH_NOTIFICATIONS_ENABLED": "0",
+            **overrides,
+        }
+    )
+    script = """
+import json
+from config import settings
+
+print(json.dumps({
+    "available": settings.MEDIA_UPLOADS_AVAILABLE,
+    "downloadTtl": settings.MEDIA_DOWNLOAD_URL_TTL_SECONDS,
+    "enabled": settings.MEDIA_UPLOADS_ENABLED,
+    "region": settings.R2_REGION_NAME,
+    "uploadTtl": settings.MEDIA_UPLOAD_URL_TTL_SECONDS,
+}))
+"""
+    return subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        cwd=django_settings.BASE_DIR,
+        env=environment,
+        text=True,
+    )
+
+
 @pytest.mark.parametrize("marker_name", _RAILWAY_ENVIRONMENT_MARKERS)
 def test_railway_environment_markers_enable_production_defaults(marker_name):
     settings_snapshot = _load_settings_with_railway_marker(marker_name)
@@ -102,6 +152,47 @@ def test_railway_deployment_runs_migrations_without_provisioning_participants():
     assert all(
         "provision_participants" not in command for command in automatic_commands
     )
+
+
+def test_media_uploads_are_disabled_without_explicit_r2_configuration():
+    completed = _load_media_settings({})
+
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout) == {
+        "available": False,
+        "downloadTtl": 300,
+        "enabled": False,
+        "region": "auto",
+        "uploadTtl": 900,
+    }
+
+
+def test_media_uploads_fail_fast_when_enabled_without_r2_credentials():
+    completed = _load_media_settings({"MEDIA_UPLOADS_ENABLED": "True"})
+
+    assert completed.returncode != 0
+    assert "Media uploads are enabled but the R2 endpoint" in completed.stderr
+
+
+def test_valid_private_r2_configuration_enables_media_uploads():
+    completed = _load_media_settings(
+        {
+            "MEDIA_UPLOADS_ENABLED": "True",
+            "R2_ACCESS_KEY_ID": "test-access-key-only",
+            "R2_BUCKET_NAME": "test-private-media",
+            "R2_ENDPOINT_URL": ("https://test-account-id.r2.cloudflarestorage.com"),
+            "R2_SECRET_ACCESS_KEY": "test-secret-key-only",
+        }
+    )
+
+    assert completed.returncode == 0
+    assert json.loads(completed.stdout) == {
+        "available": True,
+        "downloadTtl": 300,
+        "enabled": True,
+        "region": "auto",
+        "uploadTtl": 900,
+    }
 
 
 @pytest.mark.django_db

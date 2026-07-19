@@ -6,6 +6,7 @@ from .dashboard import (
     home,
     score_change_thread_view,
 )
+from .media import media_content
 from .push import service_worker
 from .system import health
 
@@ -18,6 +19,7 @@ __all__ = [
     "login_lockout",
     "login_view",
     "logout_view",
+    "media_content",
     "score_change_thread_view",
     "service_worker",
 ]

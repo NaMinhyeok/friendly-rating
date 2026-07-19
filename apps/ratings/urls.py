@@ -12,6 +12,11 @@ urlpatterns = [
         views.score_change_thread_view,
         name="score-change-thread",
     ),
+    path(
+        "media/<uuid:attachment_id>/content/",
+        views.media_content,
+        name="media-content",
+    ),
     path("service-worker.js", views.service_worker, name="service-worker"),
     path("health/", views.health, name="health"),
 ]

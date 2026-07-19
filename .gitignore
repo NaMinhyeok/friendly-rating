@@ -15,5 +15,6 @@ htmlcov/
 .ruff_cache/
 firebase-debug.log*
 .firebase/
+.wrangler/
 *-firebase-adminsdk-*.json
 service-account*.json
