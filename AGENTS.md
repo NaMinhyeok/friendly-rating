@@ -91,16 +91,20 @@ make check
 
 - Python import 경로는 `apps.ratings`지만 Django app label은 `ratings`다. 기존
   migration label, content type, admin URL과 명시적 테이블명 `participant`,
-  `relationship_score`, `score_change`, `push_device`를 우연히 바꾸지 않는다.
+  `relationship_score`, `score_change`, `score_change_comment`, `push_device`를 우연히
+  바꾸지 않는다.
 - 참가자는 정확히 두 slot으로 구성된다. 관계 점수는 방향성이 있고 0~100이며,
   한 참가자는 자신의 outgoing score만 바꾼다.
 - 점수 변경은 잠금이 포함된 원자적 트랜잭션으로 현재 점수와 이력을 함께 기록한다.
   `ScoreChange` 이력은 수정·삭제 불가다.
-- 푸시 알림은 DB commit 뒤에 전송하고, 외부 전송 실패가 점수 변경을 되돌리면 안
-  된다. 알림 본문에 점수·이유·참가자 같은 사적 정보를 추가하지 않는다.
+- 댓글은 하나의 `ScoreChange`에 속한 평평한 시간순 대화이며 작성자는 해당 관계의
+  두 참가자 중 로그인 세션으로 결정된 한 명이어야 한다.
+- 푸시 알림은 DB commit 뒤에 전송하고, 외부 전송 실패가 점수 변경이나 댓글 작성을
+  되돌리면 안 된다. 알림 본문에 점수·이유·댓글·참가자 같은 사적 정보를 추가하지
+  않는다.
 - `provision_participants`의 기본 동작은 빈 DB 초기화 또는 정확히 일치하는 상태의
   no-op이다. drift를 묵시적으로 덮어쓰지 않는다. `--check`는 무쓰기,
-  `--reconcile`은 명시적 복구이며 PK, 점수, 이력, 기기 연결을 보존한다.
+  `--reconcile`은 명시적 복구이며 PK, 점수, 이력, 댓글, 기기 연결을 보존한다.
 - 자동 배포 전 단계에서는 `migrate`만 실행한다. 참가자 프로비저닝을 build,
   startup 또는 매 배포 명령에 추가하지 않는다.
 - 로컬 기본 DB는 SQLite지만 CI와 운영의 기준 DB는 PostgreSQL이다. 행 잠금,

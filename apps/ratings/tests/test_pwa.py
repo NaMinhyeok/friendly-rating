@@ -7,6 +7,8 @@ from django.urls import reverse
 from pytest_django.asserts import assertContains, assertNotContains
 from whitenoise.middleware import WhiteNoiseMiddleware
 
+from ..models import ScoreChange
+
 
 @pytest.fixture
 def authenticated_client(client, participant_pair):
@@ -45,8 +47,8 @@ def test_service_worker_is_available_at_its_public_root_path(client):
     assert response.status_code == 200
     assert response.headers["Content-Type"] == "application/javascript"
     assert response.headers["Service-Worker-Allowed"] == "/"
-    assert "static-v3" in body
-    assert "static-v2" not in body
+    assert "static-v4" in body
+    assert "static-v3" not in body
 
 
 @pytest.mark.django_db
@@ -71,6 +73,7 @@ def test_notification_client_is_hidden_when_push_is_unavailable(
 @pytest.mark.django_db
 def test_notification_client_receives_only_public_configuration(
     authenticated_client,
+    participant_pair,
     settings,
 ):
     settings.PUSH_NOTIFICATIONS_AVAILABLE = True
@@ -83,20 +86,37 @@ def test_notification_client_receives_only_public_configuration(
     }
     settings.FIREBASE_VAPID_PUBLIC_KEY = "B" + "A" * 86
 
-    response = authenticated_client.get(reverse("home"))
+    change = ScoreChange.objects.create(
+        relationship_score=participant_pair.first_to_second,
+        changed_by=participant_pair.first,
+        delta=1,
+        reason="",
+        resulting_score=1,
+    )
 
-    assertContains(response, "data-notification-settings")
-    assertContains(response, "ratings/notifications.js")
-    assertContains(
-        response,
-        'data-register-url="/api/v1/push-devices/register/"',
+    urls = (
+        reverse("home"),
+        reverse("history"),
+        reverse(
+            "score-change-thread",
+            kwargs={"score_change_id": change.pk},
+        ),
     )
-    assertContains(
-        response,
-        'data-unregister-url="/api/v1/push-devices/unregister/"',
-    )
-    assertContains(response, "test-project")
-    assertNotContains(response, "private_key")
+    for url in urls:
+        response = authenticated_client.get(url)
+
+        assertContains(response, "data-notification-settings")
+        assertContains(response, "ratings/notifications.js")
+        assertContains(
+            response,
+            'data-register-url="/api/v1/push-devices/register/"',
+        )
+        assertContains(
+            response,
+            'data-unregister-url="/api/v1/push-devices/unregister/"',
+        )
+        assertContains(response, "test-project")
+        assertNotContains(response, "private_key")
 
 
 def test_notification_client_sends_the_rendered_csrf_token():
@@ -115,6 +135,21 @@ def test_notification_client_sends_the_rendered_csrf_token():
     assert source.count("syncFid(root.dataset.unregisterUrl, fid, false)") == 2
     assert "syncFid(root.dataset.registerUrl, fid, false)" not in source
     assert "syncFid(root.dataset.unregisterUrl, fid, true)" not in source
+
+
+def test_foreground_notification_links_only_to_a_same_origin_score_thread():
+    script_path = finders.find("ratings/notifications.js")
+    assert script_path is not None
+
+    source = Path(script_path).read_text()
+
+    assert "payload?.fcmOptions?.link" in source
+    assert "url.origin !== window.location.origin" in source
+    assert r"!/^\/history\/[1-9]\d*\/$/.test(url.pathname)" in source
+    assert "content.href = threadLink" in source
+    assert 'new CustomEvent("woorisai:push-message"' in source
+    assert "detail: { threadLink }" in source
+    assert "innerHTML" not in source
 
 
 def test_dashboard_client_uses_the_versioned_same_origin_api_safely():

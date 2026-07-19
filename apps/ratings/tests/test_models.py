@@ -2,7 +2,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
 
-from ..models import ScoreChange
+from ..models import ScoreChange, ScoreChangeComment
 
 pytestmark = pytest.mark.django_db
 
@@ -101,3 +101,14 @@ def test_score_changes_cannot_be_changed_in_bulk(participant_pair, operation):
             queryset.update(reason="바꾼 이유")
         else:
             queryset.delete()
+
+
+def test_score_change_comment_content_cannot_be_empty(participant_pair):
+    change = _create_score_change(participant_pair)
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        ScoreChangeComment.objects.create(
+            score_change=change,
+            author=participant_pair.second,
+            content="",
+        )

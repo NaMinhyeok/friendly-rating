@@ -152,8 +152,8 @@ async function initializeNotifications(root) {
     }
   });
 
-  onMessage(messaging, () => {
-    showForegroundNotification();
+  onMessage(messaging, (payload) => {
+    handleForegroundMessage(payload);
   });
 
   const enableNotifications = async () => {
@@ -349,18 +349,105 @@ function showPermissionDenied(root) {
   });
 }
 
-function showForegroundNotification() {
+function readThreadLink(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+  try {
+    const url = new URL(value, window.location.origin);
+    if (
+      url.origin !== window.location.origin ||
+      !/^\/history\/[1-9]\d*\/$/.test(url.pathname)
+    ) {
+      return null;
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function readForegroundMessage(value) {
+  if (value === "새로운 댓글이 도착했어요") {
+    return "새로운 댓글이 도착했어요";
+  }
+  if (value === "새로운 마음 기록이 도착했어요") {
+    return "새로운 마음 기록이 도착했어요";
+  }
+  return "새로운 알림이 도착했어요";
+}
+
+function handleForegroundMessage(payload) {
+  const threadLink = readThreadLink(payload?.fcmOptions?.link);
+  const message = readForegroundMessage(payload?.notification?.body);
+  showForegroundNotification(threadLink, message);
+  document.dispatchEvent(
+    new CustomEvent("woorisai:push-message", {
+      detail: { threadLink },
+    }),
+  );
+}
+
+function showForegroundNotification(threadLink, message) {
   const existingToast = document.querySelector("[data-foreground-notification]");
   existingToast?.remove();
+
+  let region = document.querySelector("[data-foreground-notification-region]");
+  if (!region) {
+    region = document.createElement("div");
+    region.dataset.foregroundNotificationRegion = "";
+    region.setAttribute("role", "status");
+    region.setAttribute("aria-live", "polite");
+    region.setAttribute("aria-atomic", "true");
+    document.body.append(region);
+  }
 
   const toast = document.createElement("div");
   toast.className = "foreground-notification";
   toast.dataset.foregroundNotification = "";
-  toast.setAttribute("role", "status");
-  toast.innerHTML = "<span aria-hidden=\"true\">♥</span><strong>새로운 마음 기록이 도착했어요</strong>";
-  document.body.append(toast);
+  const content = document.createElement(threadLink ? "a" : "div");
+  content.className = "foreground-notification__content";
+  if (threadLink) {
+    content.href = threadLink;
+    content.setAttribute("aria-label", `${message}. 대화 열기`);
+  }
+  const mark = document.createElement("span");
+  mark.setAttribute("aria-hidden", "true");
+  mark.textContent = "♥";
+  const messageElement = document.createElement("strong");
+  messageElement.textContent = message;
+  content.append(mark, messageElement);
+  toast.append(content);
+  region.append(toast);
 
-  window.setTimeout(() => toast.remove(), 5200);
+  let isFocused = false;
+  let isHovered = false;
+  let removalTimer;
+  const pauseRemoval = () => window.clearTimeout(removalTimer);
+  const scheduleRemoval = () => {
+    pauseRemoval();
+    if (isFocused || isHovered) {
+      return;
+    }
+    removalTimer = window.setTimeout(() => toast.remove(), 10000);
+  };
+  toast.addEventListener("mouseenter", () => {
+    isHovered = true;
+    pauseRemoval();
+  });
+  toast.addEventListener("mouseleave", () => {
+    isHovered = false;
+    scheduleRemoval();
+  });
+  toast.addEventListener("focusin", () => {
+    isFocused = true;
+    pauseRemoval();
+  });
+  toast.addEventListener("focusout", () => {
+    isFocused = false;
+    scheduleRemoval();
+  });
+  scheduleRemoval();
 }
 
 function updateView(

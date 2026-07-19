@@ -13,7 +13,13 @@ from django.db import connection
 from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
-from ..models import Participant, PushDevice, RelationshipScore, ScoreChange
+from ..models import (
+    Participant,
+    PushDevice,
+    RelationshipScore,
+    ScoreChange,
+    ScoreChangeComment,
+)
 
 PARTICIPANT_ENV = {
     "PARTICIPANT_1_NAME": "민수",
@@ -137,6 +143,15 @@ class ProvisionParticipantsCommandTests(TestCase):
                     "created_at",
                 )
             ),
+            "comments": list(
+                ScoreChangeComment.objects.order_by("pk").values(
+                    "pk",
+                    "score_change_id",
+                    "author_id",
+                    "content",
+                    "created_at",
+                )
+            ),
             "devices": list(
                 PushDevice.objects.order_by("pk").values(
                     "pk",
@@ -155,12 +170,18 @@ class ProvisionParticipantsCommandTests(TestCase):
         score = RelationshipScore.objects.get(source_participant=first)
         score.current_score = 7
         score.save(update_fields=("current_score", "updated_at"))
-        ScoreChange.objects.create(
+        change = ScoreChange.objects.create(
             relationship_score=score,
             changed_by=first,
             delta=7,
             reason="테스트 기록",
             resulting_score=7,
+        )
+        second = Participant.objects.get(slot=Participant.Slot.SECOND)
+        ScoreChangeComment.objects.create(
+            score_change=change,
+            author=second,
+            content="보존할 댓글",
         )
         PushDevice.objects.create(
             participant=first,
@@ -292,6 +313,7 @@ class ProvisionParticipantsCommandTests(TestCase):
             )
         )
         history_snapshot = list(ScoreChange.objects.order_by("pk").values())
+        comment_snapshot = list(ScoreChangeComment.objects.order_by("pk").values())
         device_snapshot = list(PushDevice.objects.order_by("pk").values())
 
         output = self.run_command("--reconcile", environment=RECONCILED_ENV)
@@ -314,6 +336,10 @@ class ProvisionParticipantsCommandTests(TestCase):
         )
         self.assertEqual(
             list(ScoreChange.objects.order_by("pk").values()), history_snapshot
+        )
+        self.assertEqual(
+            list(ScoreChangeComment.objects.order_by("pk").values()),
+            comment_snapshot,
         )
         self.assertEqual(
             list(PushDevice.objects.order_by("pk").values()), device_snapshot
@@ -349,6 +375,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         missing.delete()
         existing_snapshot = (existing.pk, existing.current_score, existing.updated_at)
         history_snapshot = list(ScoreChange.objects.order_by("pk").values())
+        comment_snapshot = list(ScoreChangeComment.objects.order_by("pk").values())
         device_snapshot = list(PushDevice.objects.order_by("pk").values())
 
         self.run_command("--reconcile")
@@ -361,6 +388,10 @@ class ProvisionParticipantsCommandTests(TestCase):
         self.assertEqual(RelationshipScore.objects.count(), 2)
         self.assertEqual(
             list(ScoreChange.objects.order_by("pk").values()), history_snapshot
+        )
+        self.assertEqual(
+            list(ScoreChangeComment.objects.order_by("pk").values()),
+            comment_snapshot,
         )
         self.assertEqual(
             list(PushDevice.objects.order_by("pk").values()), device_snapshot

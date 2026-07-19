@@ -84,10 +84,16 @@ function historyItem() {
       '<img src=x onerror="globalThis.compromised=true">' + "😀".repeat(101),
     resultingScore: 53,
     createdAt: "2026-07-19T01:23:00Z",
+    commentCount: 2,
+    threadUrl: "/history/31/",
   };
 }
 
-function createHistoryHarness({ response, search = "?pageNumber=1" }) {
+function createHistoryHarness({
+  fetchImplementation,
+  response,
+  search = "?pageNumber=1",
+}) {
   const content = new FakeElement();
   const status = new FakeElement();
   const list = new FakeElement();
@@ -106,7 +112,9 @@ function createHistoryHarness({ response, search = "?pageNumber=1" }) {
 
   const assignedLocations = [];
   const createdTags = [];
+  const documentListeners = {};
   const fetchCalls = [];
+  const globalListeners = {};
   const location = {
     assign(value) {
       assignedLocations.push(value);
@@ -117,8 +125,14 @@ function createHistoryHarness({ response, search = "?pageNumber=1" }) {
     search,
   };
   const sandbox = {
+    addEventListener(type, listener) {
+      globalListeners[type] = listener;
+    },
     console,
     document: {
+      addEventListener(type, listener) {
+        documentListeners[type] = listener;
+      },
       createElement(tagName) {
         createdTags.push(tagName);
         return new FakeElement();
@@ -134,7 +148,9 @@ function createHistoryHarness({ response, search = "?pageNumber=1" }) {
     },
     fetch(url, options = {}) {
       fetchCalls.push({ options, url });
-      return Promise.resolve(response);
+      return fetchImplementation
+        ? fetchImplementation(url, options, fetchCalls.length)
+        : Promise.resolve(response);
     },
     URL,
     URLSearchParams,
@@ -147,8 +163,10 @@ function createHistoryHarness({ response, search = "?pageNumber=1" }) {
     assignedLocations,
     content,
     createdTags,
+    documentListeners,
     empty,
     fetchCalls,
+    globalListeners,
     list,
     pagination,
     sandbox,
@@ -193,12 +211,17 @@ test("history fetches and safely renders the requested page with navigation", as
 
   assert.equal(harness.list.hidden, false);
   assert.equal(harness.list.children.length, 1);
-  const renderedText = descendantText(harness.list.children[0]);
+  const renderedItem = harness.list.children[0];
+  const threadLink = renderedItem.children[1];
+  const renderedText = descendantText(renderedItem);
+  assert.equal(threadLink.href, "/history/31/");
+  assert.equal(threadLink.attributes["aria-label"], undefined);
   assert.match(renderedText, /첫째 <script> → 둘째/);
   assert.match(renderedText, /\+3점/);
   assert.equal(renderedText.includes(`“${item.reason}”`), true);
   assert.match(renderedText, /변경자 첫째 <script>/);
   assert.match(renderedText, /변경 후 53점/);
+  assert.match(renderedText, /댓글 2개/);
   assert.equal(harness.createdTags.includes("img"), false);
   assert.equal(harness.createdTags.includes("script"), false);
   assert.equal(harness.sandbox.compromised, undefined);
@@ -224,6 +247,68 @@ test("history reveals its empty state for the first empty page", async () => {
   assert.equal(harness.pagination.hidden, true);
   assert.equal(harness.status.hidden, true);
   assert.equal(harness.content.attributes["aria-busy"], "false");
+});
+
+test("history refetches the current page when a foreground push arrives", async () => {
+  const harness = createHistoryHarness({
+    response: jsonResponse(200, historyPayload()),
+    search: "?pageNumber=2",
+  });
+  await settleAsyncWork();
+
+  harness.documentListeners["woorisai:push-message"]({
+    detail: { threadLink: "/history/31/" },
+  });
+  await settleAsyncWork();
+
+  assert.equal(harness.fetchCalls.length, 2);
+  assert.equal(
+    String(harness.fetchCalls[1].url),
+    "https://friendly.test/api/v1/score-changes/?pageNumber=2",
+  );
+
+  harness.sandbox.document.visibilityState = "visible";
+  harness.documentListeners.visibilitychange();
+  harness.globalListeners.pageshow({ persisted: true });
+  await settleAsyncWork();
+  assert.equal(harness.fetchCalls.length, 4);
+});
+
+test("history keeps the rendered list when a background refresh fails", async () => {
+  const item = historyItem();
+  const harness = createHistoryHarness({
+    fetchImplementation(_url, _options, callNumber) {
+      if (callNumber === 1) {
+        return Promise.resolve(
+          jsonResponse(200, historyPayload({ results: [item], totalCount: 1 })),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse(500, {
+          resultType: "ERROR",
+          error: {
+            errorType: "SERVER",
+            errorCode: "INTERNAL_SERVER_ERROR",
+            reason: "잠시 후 다시 시도해 주세요.",
+            details: [],
+          },
+          success: null,
+        }),
+      );
+    },
+  });
+  await settleAsyncWork();
+  assert.equal(harness.list.hidden, false);
+  assert.equal(harness.list.children.length, 1);
+
+  harness.documentListeners["woorisai:push-message"]({
+    detail: { threadLink: "/history/31/" },
+  });
+  await settleAsyncWork();
+
+  assert.equal(harness.list.hidden, false);
+  assert.equal(harness.list.children.length, 1);
+  assert.match(descendantText(harness.status), /불러오지 못했어요/);
 });
 
 test("history redirects an expired session to login with a local next path", async () => {

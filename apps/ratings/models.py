@@ -140,3 +140,37 @@ class ScoreChange(models.Model):
 
     def delete(self, *args, **kwargs):
         raise ValidationError("점수 변경 기록은 삭제할 수 없습니다.")
+
+
+class ScoreChangeComment(models.Model):
+    score_change = models.ForeignKey(
+        ScoreChange,
+        on_delete=models.PROTECT,
+        related_name="comments",
+    )
+    author = models.ForeignKey(
+        Participant,
+        on_delete=models.PROTECT,
+        related_name="score_change_comments",
+    )
+    content = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "score_change_comment"
+        ordering = ("created_at", "pk")
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(content=""),
+                name="score_change_comment_content_not_empty",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=("score_change", "created_at", "id"),
+                name="score_comment_thread_order_idx",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.author}: {self.content[:30]}"

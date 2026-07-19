@@ -1,10 +1,11 @@
 import json
 import logging
 import threading
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 import firebase_admin
 from django.conf import settings
+from django.urls import reverse
 from django.utils import timezone
 from firebase_admin import credentials, messaging
 
@@ -60,14 +61,21 @@ def _get_firebase_app():
             return None
 
 
-def _notification_webpush_config():
+def _notification_webpush_config(*, score_change_id: int):
     public_base_url = settings.PUBLIC_BASE_URL
     parsed_url = urlsplit(public_base_url)
     if parsed_url.scheme != "https" or not parsed_url.netloc:
         return None
 
+    thread_url = urljoin(
+        public_base_url,
+        reverse(
+            "score-change-thread",
+            kwargs={"score_change_id": score_change_id},
+        ),
+    )
     return messaging.WebpushConfig(
-        fcm_options=messaging.WebpushFCMOptions(link=public_base_url),
+        fcm_options=messaging.WebpushFCMOptions(link=thread_url),
     )
 
 
@@ -88,7 +96,12 @@ def _deactivate_invalid_devices(devices, responses):
         )
 
 
-def _send_score_change_notification(*, recipient_id: int) -> int:
+def _send_private_thread_notification(
+    *,
+    recipient_id: int,
+    score_change_id: int,
+    body: str,
+) -> int:
     if not settings.PUSH_NOTIFICATIONS_ENABLED:
         return 0
 
@@ -112,9 +125,11 @@ def _send_score_change_notification(*, recipient_id: int) -> int:
             fids=[fid for _, fid in device_batch],
             notification=messaging.Notification(
                 title="우리 사이",
-                body="새로운 마음 기록이 도착했어요",
+                body=body,
             ),
-            webpush=_notification_webpush_config(),
+            webpush=_notification_webpush_config(
+                score_change_id=score_change_id,
+            ),
         )
         response = messaging.send_each_for_multicast(message, app=firebase_app)
         sent_count += response.success_count
@@ -123,13 +138,47 @@ def _send_score_change_notification(*, recipient_id: int) -> int:
     return sent_count
 
 
-def send_score_change_notification(*, recipient_id: int) -> int:
+def send_score_change_notification(
+    *,
+    recipient_id: int,
+    score_change_id: int,
+) -> int:
     """Send a private score-change notice without affecting the score workflow."""
     try:
-        return _send_score_change_notification(recipient_id=recipient_id)
+        return _send_private_thread_notification(
+            recipient_id=recipient_id,
+            score_change_id=score_change_id,
+            body="새로운 마음 기록이 도착했어요",
+        )
     except Exception:
         logger.exception(
             "Failed to send score-change push notification.",
-            extra={"recipient_id": recipient_id},
+            extra={
+                "recipient_id": recipient_id,
+                "score_change_id": score_change_id,
+            },
+        )
+        return 0
+
+
+def send_score_comment_notification(
+    *,
+    recipient_id: int,
+    score_change_id: int,
+) -> int:
+    """Send a private comment notice linked to its score-change thread."""
+    try:
+        return _send_private_thread_notification(
+            recipient_id=recipient_id,
+            score_change_id=score_change_id,
+            body="새로운 댓글이 도착했어요",
+        )
+    except Exception:
+        logger.exception(
+            "Failed to send score-comment push notification.",
+            extra={
+                "recipient_id": recipient_id,
+                "score_change_id": score_change_id,
+            },
         )
         return 0

@@ -7,7 +7,10 @@ from django.urls import reverse
 from firebase_admin import messaging
 
 from ..models import PushDevice
-from ..notifications import send_score_change_notification
+from ..notifications import (
+    send_score_change_notification,
+    send_score_comment_notification,
+)
 from ..services import change_relationship_score
 
 VALID_FID = "c12345678901234567890A"
@@ -58,7 +61,8 @@ def test_sends_private_notification_to_all_recipient_devices(
         ) as send_each_for_multicast,
     ):
         sent_count = send_score_change_notification(
-            recipient_id=participant_pair.second.pk
+            recipient_id=participant_pair.second.pk,
+            score_change_id=42,
         )
 
     assert sent_count == 2
@@ -66,7 +70,44 @@ def test_sends_private_notification_to_all_recipient_devices(
     assert sorted(message.fids) == sorted([VALID_FID, SECOND_FID])
     assert message.notification.title == "우리 사이"
     assert message.notification.body == "새로운 마음 기록이 도착했어요"
-    assert message.webpush.fcm_options.link == TEST_PUBLIC_BASE_URL
+    assert message.webpush.fcm_options.link == (f"{TEST_PUBLIC_BASE_URL}history/42/")
+
+
+@pytest.mark.django_db
+def test_sends_private_comment_notification_to_the_thread(
+    participant_pair,
+    push_delivery_settings,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=VALID_FID,
+    )
+    send_result = SimpleNamespace(
+        success_count=1,
+        responses=[SimpleNamespace(success=True, exception=None)],
+    )
+
+    with (
+        patch(
+            "apps.ratings.notifications._get_firebase_app",
+            return_value=object(),
+        ),
+        patch(
+            "apps.ratings.notifications.messaging.send_each_for_multicast",
+            return_value=send_result,
+        ) as send_each_for_multicast,
+    ):
+        sent_count = send_score_comment_notification(
+            recipient_id=participant_pair.first.pk,
+            score_change_id=43,
+        )
+
+    assert sent_count == 1
+    message = send_each_for_multicast.call_args.args[0]
+    assert message.fids == [VALID_FID]
+    assert message.notification.title == "우리 사이"
+    assert message.notification.body == "새로운 댓글이 도착했어요"
+    assert message.webpush.fcm_options.link == (f"{TEST_PUBLIC_BASE_URL}history/43/")
 
 
 @pytest.mark.django_db
@@ -98,7 +139,10 @@ def test_permanently_invalid_fid_is_deactivated(
             return_value=send_result,
         ),
     ):
-        send_score_change_notification(recipient_id=participant_pair.second.pk)
+        send_score_change_notification(
+            recipient_id=participant_pair.second.pk,
+            score_change_id=42,
+        )
 
     device.refresh_from_db()
     assert not device.is_active
@@ -114,13 +158,16 @@ def test_score_change_notifies_recipient_only_after_commit(
         "apps.ratings.services.score_changes.send_score_change_notification"
     ) as send_push:
         with django_capture_on_commit_callbacks(execute=True):
-            change_relationship_score(
+            change = change_relationship_score(
                 source_participant=participant_pair.first,
                 delta=1,
             )
             send_push.assert_not_called()
 
-        send_push.assert_called_once_with(recipient_id=participant_pair.second.pk)
+        send_push.assert_called_once_with(
+            recipient_id=participant_pair.second.pk,
+            score_change_id=change.pk,
+        )
 
 
 @pytest.mark.django_db
@@ -190,7 +237,8 @@ def test_mismatched_service_account_project_is_rejected(
         "apps.ratings.notifications.messaging.send_each_for_multicast"
     ) as send_each_for_multicast:
         sent_count = send_score_change_notification(
-            recipient_id=participant_pair.second.pk
+            recipient_id=participant_pair.second.pk,
+            score_change_id=42,
         )
 
     assert sent_count == 0
