@@ -47,8 +47,9 @@ def test_service_worker_is_available_at_its_public_root_path(client):
     assert response.status_code == 200
     assert response.headers["Content-Type"] == "application/javascript"
     assert response.headers["Service-Worker-Allowed"] == "/"
-    assert "static-v7" in body
-    assert "static-v6" not in body
+    assert "static-v8" in body
+    assert "static-v7" not in body
+    assert "push-handoff-v1" in body
 
 
 @pytest.mark.django_db
