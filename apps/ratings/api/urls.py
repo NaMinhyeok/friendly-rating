@@ -5,6 +5,8 @@ from .views import (
     PushDeviceRegisterView,
     PushDeviceUnregisterView,
     RelationshipScoreListView,
+    ScoreChangeCommentCreateView,
+    ScoreChangeDetailView,
     ScoreChangeListView,
 )
 
@@ -20,6 +22,16 @@ urlpatterns = [
         "score-changes/",
         ScoreChangeListView.as_view(),
         name="score-change-list",
+    ),
+    path(
+        "score-changes/<int:score_change_id>/",
+        ScoreChangeDetailView.as_view(),
+        name="score-change-detail",
+    ),
+    path(
+        "score-changes/<int:score_change_id>/comments/",
+        ScoreChangeCommentCreateView.as_view(),
+        name="score-change-comment-list",
     ),
     path(
         "push-devices/register/",

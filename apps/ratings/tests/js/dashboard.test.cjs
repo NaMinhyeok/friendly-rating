@@ -301,11 +301,19 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
   };
 
   const fetchCalls = [];
+  const documentListeners = {};
+  const globalListeners = {};
   let currentScore = 0;
   let resolvePost;
   const sandbox = {
+    addEventListener(type, listener) {
+      globalListeners[type] = listener;
+    },
     console,
     document: {
+      addEventListener(type, listener) {
+        documentListeners[type] = listener;
+      },
       createElement() {
         return new FakeElement();
       },
@@ -317,6 +325,7 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
       querySelector(selector) {
         return selector === "[data-dashboard-root]" ? root : null;
       },
+      visibilityState: "hidden",
     },
     fetch(url, options = {}) {
       fetchCalls.push({ options, url });
@@ -385,4 +394,28 @@ test("dashboard initializes, submits once, and reconciles the rendered score", a
   assert.equal(amount.disabled, false);
   assert.equal(reason.disabled, false);
   assert.equal(submitButton.disabled, false);
+
+  sandbox.document.visibilityState = "visible";
+  documentListeners.visibilitychange();
+  await settleAsyncWork();
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
+    3,
+  );
+
+  globalListeners.pageshow({ persisted: true });
+  await settleAsyncWork();
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
+    4,
+  );
+
+  documentListeners["woorisai:push-message"]({
+    detail: { threadLink: "/history/31/" },
+  });
+  await settleAsyncWork();
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/relationship-scores/").length,
+    5,
+  );
 });

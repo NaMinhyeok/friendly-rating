@@ -1,7 +1,10 @@
 from django.conf import settings
 from django.contrib.auth.decorators import login_required
-from django.shortcuts import render
+from django.db.models import Q
+from django.shortcuts import get_object_or_404, render
+from django.views.decorators.http import require_GET
 
+from ..models import ScoreChange
 from ._participants import get_current_participant
 
 
@@ -30,4 +33,22 @@ def home(request):
 @login_required
 def history_view(request):
     get_current_participant(request)
-    return render(request, "ratings/history.html")
+    return render(request, "ratings/history.html", get_dashboard_context())
+
+
+@login_required
+@require_GET
+def score_change_thread_view(request, score_change_id: int):
+    participant = get_current_participant(request)
+    get_object_or_404(
+        ScoreChange.objects.filter(
+            Q(relationship_score__source_participant=participant)
+            | Q(relationship_score__target_participant=participant),
+        ),
+        pk=score_change_id,
+    )
+    context = get_dashboard_context()
+    context["score_change_id"] = score_change_id
+    response = render(request, "ratings/score_change_thread.html", context)
+    response.headers["Cache-Control"] = "private, no-store"
+    return response

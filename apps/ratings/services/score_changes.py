@@ -10,13 +10,22 @@ from ..score_rules import calculate_resulting_score, prepare_score_change
 logger = logging.getLogger(__name__)
 
 
-def _notify_recipient_after_commit(recipient_id: int) -> None:
+def _notify_recipient_after_commit(
+    recipient_id: int,
+    score_change_id: int,
+) -> None:
     try:
-        send_score_change_notification(recipient_id=recipient_id)
+        send_score_change_notification(
+            recipient_id=recipient_id,
+            score_change_id=score_change_id,
+        )
     except Exception:
         logger.exception(
             "Unexpected error while dispatching a score-change notification.",
-            extra={"recipient_id": recipient_id},
+            extra={
+                "recipient_id": recipient_id,
+                "score_change_id": score_change_id,
+            },
         )
 
 
@@ -47,10 +56,13 @@ def change_relationship_score(
         reason=prepared_change.reason,
         resulting_score=resulting_score,
     )
+    if change.pk is None:
+        raise RuntimeError("Saved score change has no primary key.")
     transaction.on_commit(
         partial(
             _notify_recipient_after_commit,
             relationship_score.target_participant_id,
+            change.pk,
         ),
         robust=True,
     )

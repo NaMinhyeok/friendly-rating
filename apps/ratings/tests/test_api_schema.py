@@ -100,6 +100,8 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
         "/api/v1/push-devices/unregister/",
         "/api/v1/relationship-scores/",
         "/api/v1/score-changes/",
+        "/api/v1/score-changes/{score_change_id}/",
+        "/api/v1/score-changes/{score_change_id}/comments/",
     }
 
 
@@ -302,6 +304,8 @@ def test_score_change_history_operation_declares_page_number_list_contract(clien
         "reason",
         "resultingScore",
         "createdAt",
+        "commentCount",
+        "threadUrl",
     }
     assert set(item["required"]) == item_fields
     assert set(item["properties"]) == item_fields
@@ -313,6 +317,8 @@ def test_score_change_history_operation_declares_page_number_list_contract(clien
     assert item["properties"]["resultingScore"]["minimum"] == 0
     assert item["properties"]["resultingScore"]["maximum"] == 100
     assert item["properties"]["createdAt"]["format"] == "date-time"
+    assert item["properties"]["commentCount"]["minimum"] == 0
+    assert item["properties"]["threadUrl"]["type"] == "string"
 
     paging = schemas["PageNumberPaging"]
     assert set(paging["required"]) == {
@@ -343,6 +349,133 @@ def test_score_change_history_operation_declares_page_number_list_contract(clien
     assert _enum_values(document, not_found_error["properties"]["errorCode"]) == [
         "NOT_FOUND"
     ]
+
+
+def test_score_change_thread_detail_declares_private_nested_comment_contract(client):
+    document = client.get(
+        reverse("api-schema"),
+        HTTP_ACCEPT="application/json",
+    ).json()
+    operation = document["paths"]["/api/v1/score-changes/{score_change_id}/"]["get"]
+
+    assert operation["security"] == [{"cookieAuth": []}]
+    assert operation["parameters"] == [
+        {
+            "in": "path",
+            "name": "score_change_id",
+            "schema": {"type": "integer"},
+            "required": True,
+        }
+    ]
+    assert "requestBody" not in operation
+    response_components = {
+        "200": "ScoreChangeThreadSuccessEnvelope",
+        "403": "ReadForbiddenErrorEnvelope",
+        "404": "NotFoundErrorEnvelope",
+        "406": "NotAcceptableErrorEnvelope",
+        "500": "InternalServerErrorEnvelope",
+    }
+    assert set(operation["responses"]) == set(response_components)
+    for status_code, component_name in response_components.items():
+        assert operation["responses"][status_code]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": f"#/components/schemas/{component_name}"}
+
+    schemas = document["components"]["schemas"]
+    envelope = schemas["ScoreChangeThreadSuccessEnvelope"]
+    assert set(envelope["required"]) == {"resultType", "error", "success"}
+    assert envelope["properties"]["success"] == {
+        "$ref": "#/components/schemas/ScoreChangeThreadData"
+    }
+    thread = schemas["ScoreChangeThreadData"]
+    assert set(thread["required"]) == {
+        "id",
+        "sourceParticipant",
+        "targetParticipant",
+        "changedBy",
+        "delta",
+        "reason",
+        "resultingScore",
+        "createdAt",
+        "commentCount",
+        "threadUrl",
+        "comments",
+    }
+    assert thread["properties"]["comments"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/ScoreChangeCommentData"},
+        "readOnly": True,
+    }
+
+    comment = schemas["ScoreChangeCommentData"]
+    assert set(comment["required"]) == {
+        "id",
+        "author",
+        "content",
+        "createdAt",
+        "isMine",
+    }
+    assert comment["properties"]["content"]["maxLength"] == 500
+    assert comment["properties"]["createdAt"]["format"] == "date-time"
+    assert comment["properties"]["isMine"]["type"] == "boolean"
+
+
+def test_score_change_comment_operation_declares_strict_csrf_contract(client):
+    document = client.get(
+        reverse("api-schema"),
+        HTTP_ACCEPT="application/json",
+    ).json()
+    operation = document["paths"]["/api/v1/score-changes/{score_change_id}/comments/"][
+        "post"
+    ]
+
+    assert operation["security"] == [{"cookieAuth": []}]
+    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+    assert set(parameters) == {"X-CSRFToken", "score_change_id"}
+    assert parameters["X-CSRFToken"]["in"] == "header"
+    assert parameters["X-CSRFToken"]["required"] is True
+    assert parameters["score_change_id"] == {
+        "in": "path",
+        "name": "score_change_id",
+        "schema": {"type": "integer"},
+        "required": True,
+    }
+
+    request_body = operation["requestBody"]
+    assert request_body["required"] is True
+    assert set(request_body["content"]) == {"application/json"}
+    request_schema = _resolve_schema(
+        document,
+        request_body["content"]["application/json"]["schema"],
+    )
+    assert request_schema == {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+            }
+        },
+        "required": ["content"],
+    }
+
+    response_components = {
+        "201": "ScoreChangeCommentSuccessEnvelope",
+        "400": "BadRequestErrorEnvelope",
+        "403": "ForbiddenErrorEnvelope",
+        "404": "NotFoundErrorEnvelope",
+        "406": "NotAcceptableErrorEnvelope",
+        "413": "RequestBodyTooLargeErrorEnvelope",
+        "415": "UnsupportedMediaTypeErrorEnvelope",
+        "500": "InternalServerErrorEnvelope",
+    }
+    assert set(operation["responses"]) == set(response_components)
+    for status_code, component_name in response_components.items():
+        assert operation["responses"][status_code]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": f"#/components/schemas/{component_name}"}
 
 
 def test_push_device_operations_declare_strict_request_and_envelope_contract(client):

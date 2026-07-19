@@ -6,10 +6,28 @@ if (historyRoot) {
 
 function initializeHistory(root) {
   const pageNumber = readPageNumber(window.location.search);
-  loadHistoryPage(root, pageNumber).catch(() => undefined);
+  const refreshHistory = () => {
+    loadHistoryPage(root, pageNumber).catch(() => undefined);
+  };
+  refreshHistory();
+  document.addEventListener?.("woorisai:push-message", () => {
+    refreshHistory();
+  });
+  document.addEventListener?.("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      refreshHistory();
+    }
+  });
+  globalThis.addEventListener?.("pageshow", (event) => {
+    if (event.persisted) {
+      refreshHistory();
+    }
+  });
 }
 
 async function loadHistoryPage(root, pageNumber) {
+  const loadSequence = Number(root.dataset.loadSequence || "0") + 1;
+  root.dataset.loadSequence = String(loadSequence);
   const content = root.querySelector("[data-history-content]");
   const status = root.querySelector("[data-history-status]");
   const list = root.querySelector("[data-history-list]");
@@ -19,21 +37,30 @@ async function loadHistoryPage(root, pageNumber) {
     return;
   }
 
+  const hasRenderedContent = !list.hidden || !empty.hidden;
   content.setAttribute("aria-busy", "true");
   status.hidden = false;
   status.textContent = "마음 기록을 불러오고 있어요…";
-  list.hidden = true;
-  empty.hidden = true;
-  pagination.hidden = true;
+  if (!hasRenderedContent) {
+    list.hidden = true;
+    empty.hidden = true;
+    pagination.hidden = true;
+  }
 
   try {
     const url = new URL(root.dataset.historyUrl, window.location.origin);
     url.searchParams.set("pageNumber", String(pageNumber));
     const payload = await requestJson(url);
     const page = readHistoryPage(payload);
+    if (root.dataset.loadSequence !== String(loadSequence)) {
+      return;
+    }
     renderHistoryPage({ empty, list, page, pagination, status });
   } catch (error) {
-    if (redirectWhenAuthenticationExpired(error)) {
+    if (
+      root.dataset.loadSequence !== String(loadSequence) ||
+      redirectWhenAuthenticationExpired(error)
+    ) {
       return;
     }
     renderHistoryError(
@@ -43,7 +70,9 @@ async function loadHistoryPage(root, pageNumber) {
       () => loadHistoryPage(root, pageNumber),
     );
   } finally {
-    content.setAttribute("aria-busy", "false");
+    if (root.dataset.loadSequence === String(loadSequence)) {
+      content.setAttribute("aria-busy", "false");
+    }
   }
 }
 
@@ -125,7 +154,11 @@ function validateHistoryItem(item) {
     item.resultingScore < 0 ||
     item.resultingScore > 100 ||
     typeof item.createdAt !== "string" ||
-    Number.isNaN(Date.parse(item.createdAt))
+    Number.isNaN(Date.parse(item.createdAt)) ||
+    !Number.isInteger(item.commentCount) ||
+    item.commentCount < 0 ||
+    typeof item.threadUrl !== "string" ||
+    !/^\/history\/[1-9]\d*\/$/.test(item.threadUrl)
   ) {
     throw new Error("마음 기록 항목 형식이 올바르지 않습니다.");
   }
@@ -163,6 +196,9 @@ function createHistoryItem(change) {
 
   const card = document.createElement("article");
   card.className = "surface history-card";
+  const link = document.createElement("a");
+  link.className = "history-card-link";
+  link.href = change.threadUrl;
   const header = document.createElement("div");
   header.className = "history-card__header";
   const heading = document.createElement("div");
@@ -196,9 +232,12 @@ function createHistoryItem(change) {
   const score = document.createElement("strong");
   score.textContent = `${change.resultingScore}점`;
   resultingScore.append(score);
-  footer.append(changedBy, resultingScore);
+  const commentCount = document.createElement("span");
+  commentCount.textContent = `댓글 ${change.commentCount}개`;
+  footer.append(changedBy, resultingScore, commentCount);
   card.append(footer);
-  item.append(dot, card);
+  link.append(card);
+  item.append(dot, link);
   return item;
 }
 

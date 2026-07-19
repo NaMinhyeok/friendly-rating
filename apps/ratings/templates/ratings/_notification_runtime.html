@@ -1,0 +1,14 @@
+{% load static %}
+{% if push_notifications_enabled %}
+<div
+    hidden
+    data-notification-settings
+    data-vapid-key="{{ firebase_vapid_key|default:'' }}"
+    data-register-url="{% url 'api-v1:push-device-register' %}"
+    data-unregister-url="{% url 'api-v1:push-device-unregister' %}"
+>
+    {% csrf_token %}
+</div>
+{{ firebase_config|json_script:"firebase-config" }}
+<script type="module" src="{% static 'ratings/notifications.js' %}"></script>
+{% endif %}

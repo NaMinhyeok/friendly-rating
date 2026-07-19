@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, override
 
 from django.core.validators import RegexValidator
+from django.urls import reverse
 from drf_spectacular.extensions import OpenApiSerializerExtension
 from drf_spectacular.utils import (
     Direction,
@@ -12,7 +13,12 @@ from drf_spectacular.utils import (
 from rest_framework import serializers
 from rest_framework.settings import api_settings
 
-from ..models import Participant, RelationshipScore, ScoreChange
+from ..models import (
+    Participant,
+    RelationshipScore,
+    ScoreChange,
+    ScoreChangeComment,
+)
 from ..services.push_devices import FIREBASE_INSTALLATION_ID_PATTERN
 from .contracts import ErrorCode, ErrorType, ResultType
 
@@ -24,6 +30,11 @@ if TYPE_CHECKING:
 class ScoreChangeCommand:
     delta: int
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreChangeCommentCommand:
+    content: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +173,43 @@ class ScoreChangeRequestSerializerExtension(OpenApiSerializerExtension):
         }
 
 
+class ScoreChangeCommentRequestSerializer(StrictRequestSerializer):
+    content = StrictCharField(
+        min_length=1,
+        max_length=500,
+        trim_whitespace=True,
+    )
+
+    def to_command(self) -> ScoreChangeCommentCommand:
+        content = self.validated_data.get("content")
+        if not isinstance(content, str):
+            raise RuntimeError("Validated score comment is not a string.")
+        return ScoreChangeCommentCommand(content=content)
+
+
+class ScoreChangeCommentRequestSerializerExtension(OpenApiSerializerExtension):
+    target_class = ScoreChangeCommentRequestSerializer
+
+    @override
+    def map_serializer(
+        self,
+        auto_schema: "AutoSchema",
+        direction: Direction,
+    ) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                },
+            },
+            "required": ["content"],
+        }
+
+
 class ScoreChangeDataSerializer(serializers.Serializer[ScoreChange]):
     id = serializers.IntegerField(read_only=True)
     delta = ScoreDeltaField(
@@ -212,6 +260,44 @@ class ScoreChangeHistoryDataSerializer(serializers.Serializer[ScoreChange]):
         max_value=100,
     )
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+    commentCount = serializers.IntegerField(
+        source="comment_count",
+        read_only=True,
+        min_value=0,
+    )
+    threadUrl = serializers.SerializerMethodField()
+
+    @extend_schema_field(serializers.CharField())
+    def get_threadUrl(self, change: ScoreChange) -> str:
+        return reverse(
+            "score-change-thread",
+            kwargs={"score_change_id": change.pk},
+        )
+
+
+class ScoreChangeCommentDataSerializer(serializers.Serializer[ScoreChangeComment]):
+    id = serializers.IntegerField(read_only=True, min_value=1)
+    author = ParticipantSummarySerializer(read_only=True)
+    content = serializers.CharField(read_only=True, max_length=500)
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+    isMine = serializers.SerializerMethodField()
+
+    def get_isMine(self, comment: ScoreChangeComment) -> bool:
+        participant_id = self.context.get("participant_id")
+        return comment.author_id == participant_id
+
+
+class ScoreChangeThreadDataSerializer(ScoreChangeHistoryDataSerializer):
+    comments = ScoreChangeCommentDataSerializer(many=True, read_only=True)
+
+    @override
+    def to_representation(self, instance: ScoreChange) -> dict[str, Any]:
+        data = super().to_representation(instance)
+        comments = data.get("comments")
+        if not isinstance(comments, list):
+            raise RuntimeError("Serialized score comments are not a list.")
+        data["commentCount"] = len(comments)
+        return data
 
 
 @extend_schema_field({"type": "integer", "const": 20})
@@ -502,6 +588,18 @@ class ScoreChangeSuccessEnvelopeSerializer(serializers.Serializer[object]):
     resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
     error = NullOnlyField()
     success = ScoreChangeDataSerializer()
+
+
+class ScoreChangeCommentSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = ScoreChangeCommentDataSerializer()
+
+
+class ScoreChangeThreadSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = ScoreChangeThreadDataSerializer()
 
 
 class ScoreChangePageSuccessEnvelopeSerializer(serializers.Serializer[object]):

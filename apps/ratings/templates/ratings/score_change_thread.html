@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}점수 대화 · 우리 사이{% endblock %}
+{% block body_class %}app-page{% endblock %}
+
+{% block content %}
+<header class="app-header">
+    <a class="back-link" href="{% url 'history' %}"><span aria-hidden="true">←</span> 마음 기록으로</a>
+    <span class="mini-brand"><span class="mini-brand__mark" aria-hidden="true">♥</span><span>우리 사이</span></span>
+</header>
+
+<main
+    class="app-shell app-shell--narrow"
+    data-score-thread-root
+    data-thread-url="{% url 'api-v1:score-change-detail' score_change_id=score_change_id %}"
+    data-comments-url="{% url 'api-v1:score-change-comment-list' score_change_id=score_change_id %}"
+>
+    <noscript>
+        <section class="surface loading-state loading-state--error">
+            점수 대화를 확인하려면 브라우저의 JavaScript를 켜 주세요.
+        </section>
+    </noscript>
+
+    <section class="hero hero--compact" aria-labelledby="thread-title">
+        <p class="eyebrow">SCORE TALK</p>
+        <h1 id="thread-title">이 마음에 대한 대화</h1>
+        <p>점수에 담긴 마음을 천천히 이야기해 보세요.</p>
+    </section>
+
+    <section data-thread-content aria-busy="true">
+        <p class="surface loading-state" data-thread-status role="status" aria-live="polite">
+            점수 대화를 불러오고 있어요…
+        </p>
+
+        <div class="thread-layout" data-thread-view hidden>
+            <article class="surface history-card thread-origin" data-thread-change></article>
+
+            <section class="surface thread-comments" aria-labelledby="comments-title">
+                <header class="thread-comments__header">
+                    <div>
+                        <p class="eyebrow">COMMENTS</p>
+                        <h2 id="comments-title">댓글 <span data-comment-count>0</span></h2>
+                    </div>
+                    <button class="text-button" type="button" data-thread-refresh>새로고침</button>
+                </header>
+
+                <ol class="comment-list" data-comment-list></ol>
+                <p class="comment-empty" data-comment-empty>아직 댓글이 없어요. 먼저 이야기를 건네 보세요.</p>
+
+                <form class="comment-form" data-comment-form aria-busy="false">
+                    {% csrf_token %}
+                    <label class="field-label-row" for="comment-content">
+                        <span class="field-label">댓글 달기</span>
+                        <span class="character-count"><span data-comment-character-current>0</span>/500</span>
+                    </label>
+                    <textarea
+                        id="comment-content"
+                        name="content"
+                        maxlength="500"
+                        placeholder="이 마음에 답장을 남겨 보세요"
+                        required
+                        disabled
+                    ></textarea>
+                    <p class="form-status" data-comment-form-status role="status" aria-live="polite"></p>
+                    <button class="button button--primary button--full" type="submit" data-comment-submit disabled>
+                        <span data-comment-submit-label>댓글 남기기</span>
+                    </button>
+                </form>
+            </section>
+        </div>
+    </section>
+</main>
+{% endblock %}
+
+{% block extra_scripts %}
+    <script type="module" src="{% static 'ratings/score_change_thread.js' %}"></script>
+    {% include "ratings/_notification_runtime.html" %}
+{% endblock %}

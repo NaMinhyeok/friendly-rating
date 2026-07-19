@@ -69,3 +69,54 @@ def test_history_requires_login(client):
 
     assert response.status_code == 302
     assert response.url == f"{reverse('login')}?next={reverse('history')}"
+
+
+def test_score_change_thread_is_a_fresh_api_backed_shell(client, participant_pair):
+    change = _create_change(participant_pair, 1, reason="화면에 미리 넣지 않을 이유")
+    _login(client, participant_pair.second)
+
+    response = client.get(
+        reverse(
+            "score-change-thread",
+            kwargs={"score_change_id": change.pk},
+        )
+    )
+
+    content = response.content.decode()
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert f'data-thread-url="/api/v1/score-changes/{change.pk}/"' in content
+    assert f'data-comments-url="/api/v1/score-changes/{change.pk}/comments/"' in content
+    assert "ratings/score_change_thread.js" in content
+    assert 'name="csrfmiddlewaretoken"' in content
+    assert "data-comment-list" in content
+    assert "화면에 미리 넣지 않을 이유" not in content
+
+
+def test_score_change_thread_requires_login_and_preserves_destination(
+    client,
+    participant_pair,
+):
+    change = _create_change(participant_pair, 1)
+    thread_url = reverse(
+        "score-change-thread",
+        kwargs={"score_change_id": change.pk},
+    )
+
+    response = client.get(thread_url)
+
+    assert response.status_code == 302
+    assert response.url == f"{reverse('login')}?next={thread_url}"
+
+
+def test_score_change_thread_returns_not_found_for_missing_change(
+    client,
+    participant_pair,
+):
+    _login(client, participant_pair.first)
+
+    response = client.get(
+        reverse("score-change-thread", kwargs={"score_change_id": 999999})
+    )
+
+    assert response.status_code == 404

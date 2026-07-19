@@ -7,7 +7,7 @@ from django.test import Client
 from django.urls import reverse
 from django.utils.dateparse import parse_datetime
 
-from ..models import ScoreChange
+from ..models import ScoreChange, ScoreChangeComment
 
 pytestmark = pytest.mark.django_db
 
@@ -44,6 +44,11 @@ def _assert_error(response, *, status_code, error_type, error_code):
 def test_participant_can_read_shared_bidirectional_history(participant_pair):
     first_change = _create_change(participant_pair, 1)
     second_change = _create_change(participant_pair, 2, reverse_direction=True)
+    ScoreChangeComment.objects.create(
+        score_change=first_change,
+        author=participant_pair.second,
+        content="첫 댓글",
+    )
     client = Client(enforce_csrf_checks=True)
     client.force_login(participant_pair.second.user)
 
@@ -79,6 +84,11 @@ def test_participant_can_read_shared_bidirectional_history(participant_pair):
                     "reason": "변경 이유 2",
                     "resultingScore": 2,
                     "createdAt": body["success"]["results"][0]["createdAt"],
+                    "commentCount": 0,
+                    "threadUrl": reverse(
+                        "score-change-thread",
+                        kwargs={"score_change_id": second_change.pk},
+                    ),
                 },
                 {
                     "id": first_change.pk,
@@ -98,6 +108,11 @@ def test_participant_can_read_shared_bidirectional_history(participant_pair):
                     "reason": "변경 이유 1",
                     "resultingScore": 1,
                     "createdAt": body["success"]["results"][1]["createdAt"],
+                    "commentCount": 1,
+                    "threadUrl": reverse(
+                        "score-change-thread",
+                        kwargs={"score_change_id": first_change.pk},
+                    ),
                 },
             ],
             "paging": {

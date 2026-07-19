@@ -9,6 +9,7 @@ function initializeDashboard(root) {
   const form = root.querySelector("[data-score-change-form]");
   const submitButton = root.querySelector("[data-score-submit]");
   let isSubmitting = false;
+  let scoreLoadSequence = 0;
 
   form?.addEventListener("submit", (event) => {
     event.preventDefault();
@@ -23,6 +24,7 @@ function initializeDashboard(root) {
       return;
     }
 
+    const loadSequence = ++scoreLoadSequence;
     scoreList.setAttribute("aria-busy", "true");
     const status = scoreList.querySelector("[data-score-list-status]");
     if (status) {
@@ -30,8 +32,13 @@ function initializeDashboard(root) {
     }
 
     try {
-      const payload = await requestJson(root.dataset.scoresUrl);
+      const payload = await requestJson(root.dataset.scoresUrl, {
+        cache: "no-store",
+      });
       const scores = readRelationshipScores(payload);
+      if (loadSequence !== scoreLoadSequence) {
+        return;
+      }
       renderScores(root, scoreList, scores);
       if (submitButton) {
         submitButton.disabled = false;
@@ -40,9 +47,13 @@ function initializeDashboard(root) {
       if (redirectWhenAuthenticationExpired(error)) {
         return;
       }
-      renderScoreLoadError(scoreList, loadScores);
+      if (loadSequence === scoreLoadSequence) {
+        renderScoreLoadError(scoreList, loadScores);
+      }
     } finally {
-      scoreList.setAttribute("aria-busy", "false");
+      if (loadSequence === scoreLoadSequence) {
+        scoreList.setAttribute("aria-busy", "false");
+      }
     }
   };
 
@@ -105,6 +116,20 @@ function initializeDashboard(root) {
       );
     }
   };
+
+  document.addEventListener?.("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !isSubmitting) {
+      loadScores().catch(() => undefined);
+    }
+  });
+  document.addEventListener?.("woorisai:push-message", () => {
+    loadScores().catch(() => undefined);
+  });
+  globalThis.addEventListener?.("pageshow", (event) => {
+    if (event.persisted && !isSubmitting) {
+      loadScores().catch(() => undefined);
+    }
+  });
 
   loadScores().catch(() => undefined);
 }

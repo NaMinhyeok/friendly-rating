@@ -22,6 +22,12 @@
 <body class="{% block body_class %}{% endblock %}">
     <div class="ambient ambient--one" aria-hidden="true"></div>
     <div class="ambient ambient--two" aria-hidden="true"></div>
+    <div
+        data-foreground-notification-region
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+    ></div>
     {% block content %}{% endblock %}
     {% block extra_scripts %}{% endblock %}
 </body>

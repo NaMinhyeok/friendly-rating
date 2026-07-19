@@ -2,17 +2,24 @@ from typing import Never, override
 
 from django.core.exceptions import ValidationError as DjangoValidationError
 from django.core.paginator import EmptyPage, Paginator
-from django.db.models import Q
+from django.db.models import Count, Prefetch, Q, QuerySet
+from django.shortcuts import get_object_or_404
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
-from rest_framework.exceptions import NotFound
+from rest_framework.exceptions import NotFound, ValidationError
 from rest_framework.permissions import AllowAny
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ..models import Participant, RelationshipScore, ScoreChange
+from ..models import (
+    Participant,
+    RelationshipScore,
+    ScoreChange,
+    ScoreChangeComment,
+)
 from ..services import (
+    add_score_change_comment,
     change_relationship_score,
     register_participant_push_device,
     unregister_participant_push_device,
@@ -32,12 +39,17 @@ from .serializers import (
     RelationshipScoreListDataSerializer,
     RelationshipScoreListSuccessEnvelopeSerializer,
     RequestBodyTooLargeErrorEnvelopeSerializer,
+    ScoreChangeCommentDataSerializer,
+    ScoreChangeCommentRequestSerializer,
+    ScoreChangeCommentSuccessEnvelopeSerializer,
     ScoreChangeDataSerializer,
     ScoreChangePageDataSerializer,
     ScoreChangePageQuerySerializer,
     ScoreChangePageSuccessEnvelopeSerializer,
     ScoreChangeRequestSerializer,
     ScoreChangeSuccessEnvelopeSerializer,
+    ScoreChangeThreadDataSerializer,
+    ScoreChangeThreadSuccessEnvelopeSerializer,
     ScoreOutOfRangeErrorEnvelopeSerializer,
     UnsupportedMediaTypeErrorEnvelopeSerializer,
 )
@@ -57,6 +69,23 @@ def _participant_for_request(request: Request) -> Participant:
         return Participant.objects.get(user_id=request.user.pk)
     except Participant.DoesNotExist as error:
         raise ParticipantRequired() from error
+
+
+def _score_changes_for_participant(
+    participant: Participant,
+) -> QuerySet[ScoreChange]:
+    return (
+        ScoreChange.objects.select_related(
+            "changed_by",
+            "relationship_score__source_participant",
+            "relationship_score__target_participant",
+        )
+        .filter(
+            Q(relationship_score__source_participant=participant)
+            | Q(relationship_score__target_participant=participant),
+        )
+        .annotate(comment_count=Count("comments"))
+    )
 
 
 class RelationshipScoreListView(APIView):
@@ -128,17 +157,9 @@ class ScoreChangeListView(APIView):
         if not isinstance(page_number, int) or isinstance(page_number, bool):
             raise RuntimeError("Validated page number is not an integer.")
 
-        changes = (
-            ScoreChange.objects.select_related(
-                "changed_by",
-                "relationship_score__source_participant",
-                "relationship_score__target_participant",
-            )
-            .filter(
-                Q(relationship_score__source_participant=participant)
-                | Q(relationship_score__target_participant=participant),
-            )
-            .order_by("-created_at", "-pk")
+        changes = _score_changes_for_participant(participant).order_by(
+            "-created_at",
+            "-pk",
         )
         paginator = Paginator(changes, SCORE_CHANGE_PAGE_SIZE)
         try:
@@ -201,6 +222,98 @@ class ScoreChangeListView(APIView):
 
         response_serializer = ScoreChangeDataSerializer(change)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ScoreChangeDetailView(APIView):
+    @extend_schema(
+        operation_id="retrieveScoreChangeThread",
+        summary="점수 변경 대화 조회",
+        description=(
+            "특정 점수 변경과 그 아래의 댓글을 시간순으로 조회합니다. 현재 참가자가 "
+            "속한 관계의 점수 변경만 조회할 수 있습니다."
+        ),
+        tags=("scoreChanges",),
+        responses={
+            200: ScoreChangeThreadSuccessEnvelopeSerializer,
+            403: ReadForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def get(self, request: Request, score_change_id: int) -> Response:
+        participant = _participant_for_request(request)
+        change = get_object_or_404(
+            _score_changes_for_participant(participant).prefetch_related(
+                Prefetch(
+                    "comments",
+                    queryset=ScoreChangeComment.objects.select_related(
+                        "author"
+                    ).order_by("created_at", "pk"),
+                )
+            ),
+            pk=score_change_id,
+        )
+        serializer = ScoreChangeThreadDataSerializer(
+            change,
+            context={"participant_id": participant.pk},
+        )
+        response = Response(serializer.data)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
+
+
+class ScoreChangeCommentCreateView(APIView):
+    @extend_schema(
+        operation_id="createScoreChangeComment",
+        summary="점수 변경에 댓글 작성",
+        description=(
+            "현재 참가자가 특정 점수 변경에 댓글을 작성합니다. 작성자는 세션에서 "
+            "결정되며 JSON 요청 본문은 4KiB 이하여야 합니다."
+        ),
+        tags=("scoreChanges",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=ScoreChangeCommentRequestSerializer,
+        responses={
+            201: ScoreChangeCommentSuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: ForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request, score_change_id: int) -> Response:
+        participant = _participant_for_request(request)
+        change = get_object_or_404(
+            _score_changes_for_participant(participant),
+            pk=score_change_id,
+        )
+        serializer = ScoreChangeCommentRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        command = serializer.to_command()
+
+        try:
+            comment = add_score_change_comment(
+                score_change=change,
+                author=participant,
+                content=command.content,
+            )
+        except DjangoValidationError as error:
+            raise ValidationError({"content": error.messages}) from error
+
+        response_serializer = ScoreChangeCommentDataSerializer(
+            comment,
+            context={"participant_id": participant.pk},
+        )
+        response = Response(
+            response_serializer.data,
+            status=status.HTTP_201_CREATED,
+        )
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
 
 
 class PushDeviceRegisterView(APIView):
