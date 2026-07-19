@@ -14,6 +14,7 @@ from .factories import create_participant_pair
 
 VALID_FID = "c12345678901234567890A"
 SECOND_FID = "d12345678901234567890B"
+TEST_PUBLIC_BASE_URL = "https://friendly-rating.example.test/"
 
 
 class PushDeviceViewTests(TestCase):
@@ -135,7 +136,7 @@ class PushDeviceViewTests(TestCase):
 
 @override_settings(
     PUSH_NOTIFICATIONS_ENABLED=True,
-    PUBLIC_BASE_URL="https://woorisai.up.railway.app/",
+    PUBLIC_BASE_URL=TEST_PUBLIC_BASE_URL,
 )
 class PushDeliveryTests(TestCase):
     def setUp(self):
@@ -177,7 +178,7 @@ class PushDeliveryTests(TestCase):
         )
         self.assertEqual(
             message.webpush.fcm_options.link,
-            "https://woorisai.up.railway.app/",
+            TEST_PUBLIC_BASE_URL,
         )
 
     @patch("ratings.notifications.messaging.send_each_for_multicast")
