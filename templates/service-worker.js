@@ -81,6 +81,100 @@ async function cacheStaticAsset(request) {
   return response;
 }
 
+function readScoreThreadUrl(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  try {
+    const url = new URL(value, self.location.origin);
+    if (
+      url.origin !== self.location.origin ||
+      !/^\/history\/[1-9]\d*\/$/.test(url.pathname)
+    ) {
+      return null;
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function readClientPath(value) {
+  try {
+    const url = new URL(value, self.location.origin);
+    if (url.origin !== self.location.origin) {
+      return null;
+    }
+    return `${url.pathname}${url.search}`;
+  } catch {
+    return null;
+  }
+}
+
+function isAppClient(value) {
+  const clientPath = readClientPath(value);
+  return (
+    clientPath !== null &&
+    /^(?:\/|\/login\/|\/history\/|\/history\/[1-9]\d*\/)(?:\?.*)?$/.test(
+      clientPath,
+    )
+  );
+}
+
+async function openScoreThread(threadUrl) {
+  const windowClients = await self.clients.matchAll({
+    type: "window",
+    includeUncontrolled: true,
+  });
+  const threadClient = windowClients.find(
+    (client) => readClientPath(client.url) === threadUrl,
+  );
+  if (threadClient) {
+    try {
+      await threadClient.focus();
+      return;
+    } catch (error) {
+      console.warn("열린 점수 대화를 활성화하지 못했어요.", error);
+    }
+  }
+
+  const appClient = windowClients.find(
+    (client) => client !== threadClient && isAppClient(client.url),
+  );
+  if (appClient && typeof appClient.navigate === "function") {
+    try {
+      const navigatedClient = await appClient.navigate(threadUrl);
+      if (navigatedClient) {
+        await navigatedClient.focus();
+        return;
+      }
+    } catch (error) {
+      console.warn("열린 앱을 점수 대화로 이동하지 못했어요.", error);
+    }
+  }
+
+  await self.clients.openWindow(threadUrl);
+}
+
+// Firebase's listener focuses an existing same-host window without navigating it.
+// Register first so notification clicks always open the intended score thread.
+self.addEventListener("notificationclick", (event) => {
+  const firebaseMessage = event.notification?.data?.FCM_MSG;
+  if (event.action || !firebaseMessage || typeof firebaseMessage !== "object") {
+    return;
+  }
+
+  event.stopImmediatePropagation();
+  event.notification.close();
+  const threadUrl = readScoreThreadUrl(firebaseMessage.fcmOptions?.link);
+  if (!threadUrl) {
+    return;
+  }
+
+  event.waitUntil(openScoreThread(threadUrl));
+});
+
 const FIREBASE_CONFIG = {{ firebase_config_json|safe }};
 
 if (Object.keys(FIREBASE_CONFIG).length > 0) {
