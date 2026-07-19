@@ -1,4 +1,5 @@
 import re
+from typing import cast
 
 from django import forms
 from django.contrib.auth import authenticate
@@ -33,7 +34,11 @@ class PinLoginForm(forms.Form):
         super().__init__(*args, **kwargs)
         self.request = request
         self.authenticated_user = None
-        self.fields["participant"].queryset = Participant.objects.select_related(
+        participant_field = cast(
+            forms.ModelChoiceField,
+            self.fields["participant"],
+        )
+        participant_field.queryset = Participant.objects.select_related(
             "user"
         ).order_by("slot")
 
@@ -44,7 +49,7 @@ class PinLoginForm(forms.Form):
         return pin
 
     def clean(self):
-        cleaned_data = super().clean()
+        cleaned_data = super().clean() or {}
         participant = cleaned_data.get("participant")
         pin = cleaned_data.get("pin")
         if participant is None or pin is None:

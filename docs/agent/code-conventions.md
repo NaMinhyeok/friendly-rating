@@ -9,6 +9,13 @@
 - Python 3.13, Django 5.2 문법과 API를 사용한다.
 - Ruff의 lint/format 결과를 기준으로 한다. 수동 스타일 규칙을 추가해 formatter와
   경쟁하지 않는다.
+- Pyrefly는 migration을 제외한 프로젝트 전체를 `default` preset으로 검사하고,
+  `score_rules.py`와 `services/`는 `strict`로 검사한다. 향후 API 패키지가 생기면
+  외부 입력을 타입으로 바꾸는 경계도 `strict` 범위에 포함한다.
+- 타입 진단은 annotation, narrowing 또는 안전한 구조 변경으로 해결한다. baseline,
+  대량 suppression, 파일·프로젝트 단위 ignore로 통과시키지 않는다. 의도적으로 잘못된
+  타입을 전달하는 음성 테스트만 정확한 진단 코드를 지정한 한 줄 suppression을 쓸 수
+  있다.
 - import는 `apps.ratings` 패키지 구조를 따른다. 앱 내부에서는 현재처럼 상대 import를
   사용할 수 있지만, patch path와 설정의 dotted path는 실제 runtime lookup 경로를
   쓴다.
@@ -81,6 +88,28 @@
   programming error를 사용자 오류로 바꿔 숨기지 않는다.
 - URL name과 공개 path는 호환성 계약이다. 이름 변경은 모든 caller와 회귀 테스트를
   함께 다루는 명시적 변경이어야 한다.
+
+### 향후 API 경계
+
+- DRF를 도입하면 serializer는 신뢰할 수 없는 JSON의 런타임 검증을 담당한다. view는
+  검증된 값을 명시적인 Python 타입이나 command로 바꾼 뒤 service에 넘기고,
+  `Request`, serializer, `Response` 또는 타입이 약한 `validated_data`를 service 안으로
+  전파하지 않는다.
+- same-origin session 인증을 유지하고 mutation의 CSRF 보호를 우회하지 않는다. 로그인
+  여부와 참가자 권한은 서로 다른 검사로 다룬다.
+- 새 API 응답은 성공
+  `{ "resultType": "SUCCESS", "error": null, "success": T }`와 실패
+  `{ "resultType": "ERROR", "error": E, "success": null }`의 배타적인 형태로
+  통일한다. envelope가 HTTP 상태 코드를 대신하지 않는다.
+- 오류 `E`는 문자열 `errorType`, 안정적인 영문 `errorCode`, 자연스러운 한국어
+  `reason`, 타입이 정해진 `details`를 갖는다. 자유형 `data` 객체나 오류 문구를
+  클라이언트 분기 계약으로 사용하지 않는다.
+- 목록은 페이지네이션 여부와 무관하게 `success.results`를 사용하고 page/cursor
+  metadata는 각각 명시적인 schema로 분리한다. 외부 JSON은 camelCase로 일관되게
+  노출한다.
+- view마다 envelope를 직접 조립하지 않고 renderer, exception handler, paginator 같은
+  공통 경계에서 적용한다. 향후 OpenAPI schema는 실제 응답과 같은 성공/실패 구조를
+  표현하고 생성 경고와 schema 불일치를 전체 품질 게이트에서 검출한다.
 
 ### Template, 정적 파일과 브라우저 코드
 

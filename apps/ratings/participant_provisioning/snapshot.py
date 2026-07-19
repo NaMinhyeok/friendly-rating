@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from typing import cast
 
 from django.contrib.auth import get_user_model
+from django.contrib.auth.models import User
 from django.db.models import Q
 
 from ..models import Participant, RelationshipScore
@@ -9,8 +11,8 @@ from ..models import Participant, RelationshipScore
 @dataclass
 class ProvisioningSnapshot:
     participants_by_slot: dict[int, Participant]
-    users_by_id: dict[int, object]
-    canonical_users: dict[str, object]
+    users_by_id: dict[int, User]
+    canonical_users: dict[str, User]
     scores_by_source_id: dict[int, RelationshipScore]
     participant_count: int
     score_count: int
@@ -30,13 +32,10 @@ def load_snapshot(specifications, *, lock):
     participant_user_ids = [participant.user_id for participant in participants]
     canonical_usernames = [spec.username for spec in specifications]
 
-    user_query = (
-        get_user_model()
-        .objects.filter(
-            Q(pk__in=participant_user_ids) | Q(username__in=canonical_usernames)
-        )
-        .order_by("pk")
-    )
+    user_model = cast(type[User], get_user_model())
+    user_query = user_model.objects.filter(
+        Q(pk__in=participant_user_ids) | Q(username__in=canonical_usernames)
+    ).order_by("pk")
     if lock:
         user_query = user_query.select_for_update()
     users = list(user_query)

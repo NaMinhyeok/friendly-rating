@@ -1,7 +1,7 @@
-from types import SimpleNamespace
-
 import pytest
+from django.contrib.auth.models import User
 
+from ..models import Participant, RelationshipScore
 from ..participant_provisioning import inspection
 from ..participant_provisioning.contracts import (
     ParticipantSpec,
@@ -39,7 +39,7 @@ def specifications():
 @pytest.fixture
 def complete_snapshot(specifications):
     users = {
-        spec.slot: SimpleNamespace(
+        spec.slot: User(
             pk=spec.slot * 10,
             username=spec.username,
             first_name=spec.display_name,
@@ -51,7 +51,7 @@ def complete_snapshot(specifications):
         for spec in specifications
     }
     participants = {
-        spec.slot: SimpleNamespace(
+        spec.slot: Participant(
             pk=spec.slot * 100,
             user_id=users[spec.slot].pk,
             display_name=spec.display_name,
@@ -63,11 +63,11 @@ def complete_snapshot(specifications):
 
     return ProvisioningSnapshot(
         participants_by_slot=participants,
-        users_by_id={user.pk: user for user in users.values()},
+        users_by_id={spec.slot * 10: users[spec.slot] for spec in specifications},
         canonical_users={user.username: user for user in users.values()},
         scores_by_source_id={
-            first.pk: SimpleNamespace(target_participant_id=second.pk),
-            second.pk: SimpleNamespace(target_participant_id=first.pk),
+            first.pk: RelationshipScore(target_participant_id=second.pk),
+            second.pk: RelationshipScore(target_participant_id=first.pk),
         },
         participant_count=2,
         score_count=2,

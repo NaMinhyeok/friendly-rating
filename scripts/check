@@ -10,6 +10,7 @@ usage() {
 Usage:
   ./scripts/check
   ./scripts/check lint
+  ./scripts/check typecheck
   ./scripts/check test [--] [pytest arguments...]
 EOF
 }
@@ -20,7 +21,7 @@ if [[ $# -gt 0 ]]; then
 fi
 
 case "$mode" in
-    all | lint | test) ;;
+    all | lint | typecheck | test) ;;
     -h | --help)
         usage
         exit 0
@@ -60,6 +61,18 @@ if [[ "$mode" == "all" || "$mode" == "lint" ]]; then
 fi
 
 if [[ "$mode" == "lint" ]]; then
+    printf "\nRequested repository checks passed.\n"
+    exit 0
+fi
+
+if [[ "$mode" == "all" || "$mode" == "typecheck" ]]; then
+    run_step "Run Pyrefly type checks" uv run --no-sync pyrefly check
+    run_step "Run strict Pyrefly checks for core logic" \
+        uv run --no-sync pyrefly check --preset strict \
+        apps/ratings/score_rules.py apps/ratings/services
+fi
+
+if [[ "$mode" == "typecheck" ]]; then
     printf "\nRequested repository checks passed.\n"
     exit 0
 fi

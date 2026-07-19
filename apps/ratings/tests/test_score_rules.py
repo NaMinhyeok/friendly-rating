@@ -103,6 +103,9 @@ def test_rejects_more_than_two_hundred_reason_characters():
 
 def test_rejects_a_non_string_reason():
     with pytest.raises(ValidationError) as raised:
-        prepare_score_change(delta=1, reason=None)
+        prepare_score_change(
+            delta=1,
+            reason=None,  # pyrefly: ignore[bad-argument-type]
+        )
 
     assert raised.value.messages == ["변경 이유는 문자열이어야 합니다."]

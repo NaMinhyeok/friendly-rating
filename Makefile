@@ -5,12 +5,13 @@ ENV_FILE ?= .env
 PYTEST_ARGS ?=
 RUNSERVER_ARGS ?=
 
-.PHONY: help setup lint test check run
+.PHONY: help setup lint typecheck test check run
 
 help:
 	@printf '%s\n' \
 		'make setup                         Install locked dependencies' \
 		'make lint                          Run Ruff checks' \
+		'make typecheck                     Run Pyrefly checks' \
 		'make test [PYTEST_ARGS="..."]      Run isolated pytest' \
 		'make check                         Run the full repository gate' \
 		'make run [RUNSERVER_ARGS="..."]    Start the local Django server'
@@ -20,6 +21,9 @@ setup:
 
 lint:
 	./scripts/check lint
+
+typecheck:
+	./scripts/check typecheck
 
 test:
 	./scripts/check test -- $(PYTEST_ARGS)

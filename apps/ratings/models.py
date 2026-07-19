@@ -5,6 +5,8 @@ from django.db.models import F, Q
 
 
 class Participant(models.Model):
+    user_id: int
+
     class Slot(models.IntegerChoices):
         FIRST = 1, "첫 번째"
         SECOND = 2, "두 번째"
