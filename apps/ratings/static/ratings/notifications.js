@@ -77,7 +77,7 @@ async function initializeNotifications(root) {
     window.localStorage.setItem(preferenceKey, enabled ? "true" : "false");
   };
 
-  const syncFid = async (url, fid) => {
+  const syncFid = async (url, fid, expectedRegistered) => {
     const response = await fetch(url, {
       method: "POST",
       credentials: "same-origin",
@@ -95,7 +95,11 @@ async function initializeNotifications(root) {
     }
 
     const payload = await response.json();
-    if (payload?.ok !== true) {
+    if (
+      payload?.resultType !== "SUCCESS" ||
+      payload?.error !== null ||
+      payload?.success?.registered !== expectedRegistered
+    ) {
       throw new Error("Notification registration was not acknowledged.");
     }
   };
@@ -104,12 +108,12 @@ async function initializeNotifications(root) {
     currentFid = fid;
 
     if (getPreference() === "false") {
-      await syncFid(root.dataset.unregisterUrl, fid).catch(() => undefined);
+      await syncFid(root.dataset.unregisterUrl, fid, false).catch(() => undefined);
       return;
     }
 
     try {
-      await syncFid(root.dataset.registerUrl, fid);
+      await syncFid(root.dataset.registerUrl, fid, true);
       isRegistered = true;
       isBusy = false;
       setPreference(true);
@@ -135,7 +139,7 @@ async function initializeNotifications(root) {
     isRegistered = false;
 
     try {
-      await syncFid(root.dataset.unregisterUrl, fid);
+      await syncFid(root.dataset.unregisterUrl, fid, false);
     } catch (error) {
       console.warn("알림 기기 정보를 정리하지 못했어요.", error);
     } finally {

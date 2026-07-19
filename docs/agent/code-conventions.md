@@ -57,8 +57,9 @@
 ### Service와 트랜잭션
 
 - 여러 model 쓰기, 잠금, 이력 생성, 외부 부작용을 조정하는 재사용 가능하거나 복잡한
-  workflow는 `services/`에 둔다. 한 HTTP endpoint에만 속한 제한된 기기 등록 흐름은
-  현재 `views/push.py`처럼 view 가까이에 둘 수 있다.
+  workflow는 `services/`에 둔다. legacy Django view와 DRF API처럼 둘 이상의 HTTP
+  adapter가 같은 쓰기를 제공하면 입력 parsing과 응답은 각 adapter에 남기고 ORM
+  workflow는 하나의 service에서 공유한다.
 - 동시 갱신 가능한 점수/기기 상태는 `transaction.atomic`과 필요한 row lock을
   사용하고, 읽기-계산-쓰기가 한 transaction 안에 있는지 확인한다.
 - 외부 I/O는 열린 DB transaction 안에서 수행하지 않는다. commit 성공 뒤 필요한

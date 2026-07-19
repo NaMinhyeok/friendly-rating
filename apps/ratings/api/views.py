@@ -10,19 +10,34 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from ..models import Participant
-from ..services import change_relationship_score
+from ..services import (
+    change_relationship_score,
+    register_participant_push_device,
+    unregister_participant_push_device,
+)
 from .exceptions import ParticipantRequired, ScoreOutOfRange
 from .serializers import (
     BadRequestErrorEnvelopeSerializer,
     ForbiddenErrorEnvelopeSerializer,
     InternalServerErrorEnvelopeSerializer,
     NotAcceptableErrorEnvelopeSerializer,
+    PushDeviceRegisteredSuccessEnvelopeSerializer,
+    PushDeviceRequestSerializer,
+    PushDeviceUnregisteredSuccessEnvelopeSerializer,
     RequestBodyTooLargeErrorEnvelopeSerializer,
     ScoreChangeDataSerializer,
     ScoreChangeRequestSerializer,
     ScoreChangeSuccessEnvelopeSerializer,
     ScoreOutOfRangeErrorEnvelopeSerializer,
     UnsupportedMediaTypeErrorEnvelopeSerializer,
+)
+
+CSRF_HEADER_PARAMETER = OpenApiParameter(
+    name="X-CSRFToken",
+    type=str,
+    location=OpenApiParameter.HEADER,
+    required=True,
+    description="렌더링된 페이지 또는 CSRF 쿠키에서 얻은 토큰",
 )
 
 
@@ -43,15 +58,7 @@ class ScoreChangeListView(APIView):
             "본문은 4KiB 이하여야 합니다."
         ),
         tags=("scoreChanges",),
-        parameters=[
-            OpenApiParameter(
-                name="X-CSRFToken",
-                type=str,
-                location=OpenApiParameter.HEADER,
-                required=True,
-                description="렌더링된 페이지 또는 CSRF 쿠키에서 얻은 토큰",
-            ),
-        ],
+        parameters=[CSRF_HEADER_PARAMETER],
         request=ScoreChangeRequestSerializer,
         responses={
             201: ScoreChangeSuccessEnvelopeSerializer,
@@ -82,6 +89,79 @@ class ScoreChangeListView(APIView):
 
         response_serializer = ScoreChangeDataSerializer(change)
         return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+
+
+class PushDeviceRegisterView(APIView):
+    @extend_schema(
+        operation_id="registerPushDevice",
+        summary="현재 참가자의 푸시 기기 등록",
+        description=(
+            "Firebase 기기 ID를 현재 참가자에게 연결하고 활성화합니다. 같은 출처 "
+            "브라우저는 X-CSRFToken 헤더를 함께 전송해야 하며 JSON 요청 본문은 "
+            "4KiB 이하여야 합니다."
+        ),
+        tags=("pushDevices",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=PushDeviceRequestSerializer,
+        responses={
+            200: PushDeviceRegisteredSuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: ForbiddenErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request) -> Response:
+        participant = _participant_for_request(request)
+        serializer = PushDeviceRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        command = serializer.to_command()
+
+        user_agent = request.META.get("HTTP_USER_AGENT", "")
+        if not isinstance(user_agent, str):
+            user_agent = ""
+        register_participant_push_device(
+            participant=participant,
+            firebase_installation_id=command.fid,
+            user_agent=user_agent,
+        )
+        return Response({"registered": True})
+
+
+class PushDeviceUnregisterView(APIView):
+    @extend_schema(
+        operation_id="unregisterPushDevice",
+        summary="현재 참가자의 푸시 기기 해제",
+        description=(
+            "현재 참가자에게 연결된 Firebase 기기를 비활성화합니다. 기기가 없거나 "
+            "다른 참가자 소유여도 같은 성공 응답을 반환합니다."
+        ),
+        tags=("pushDevices",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=PushDeviceRequestSerializer,
+        responses={
+            200: PushDeviceUnregisteredSuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: ForbiddenErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request) -> Response:
+        participant = _participant_for_request(request)
+        serializer = PushDeviceRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        command = serializer.to_command()
+
+        unregister_participant_push_device(
+            participant=participant,
+            firebase_installation_id=command.fid,
+        )
+        return Response({"registered": False})
 
 
 @extend_schema(exclude=True)

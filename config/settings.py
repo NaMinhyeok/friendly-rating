@@ -294,12 +294,13 @@ REST_FRAMEWORK = {
 
 SPECTACULAR_SETTINGS = {
     "TITLE": "우리 사이 API",
-    "DESCRIPTION": "두 참가자의 관계 점수 API",
+    "DESCRIPTION": "두 참가자의 관계 점수와 알림 기기 API",
     "VERSION": "1.0.0",
     "OAS_VERSION": "3.1.0",
     "COMPONENT_SPLIT_REQUEST": True,
     "ENUM_NAME_OVERRIDES": {
         "ErrorResultType": ["ERROR"],
+        "SuccessResultType": ["SUCCESS"],
         "RequestErrorType": ["REQUEST"],
         "AuthenticationErrorType": ["AUTHENTICATION"],
     },

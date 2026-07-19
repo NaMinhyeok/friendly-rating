@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, override
 
+from django.core.validators import RegexValidator
 from drf_spectacular.extensions import OpenApiSerializerExtension
 from drf_spectacular.utils import (
     Direction,
@@ -12,6 +13,7 @@ from rest_framework import serializers
 from rest_framework.settings import api_settings
 
 from ..models import ScoreChange
+from ..services.push_devices import FIREBASE_INSTALLATION_ID_PATTERN
 from .contracts import ErrorCode, ErrorType, ResultType
 
 if TYPE_CHECKING:
@@ -22,6 +24,11 @@ if TYPE_CHECKING:
 class ScoreChangeCommand:
     delta: int
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class PushDeviceCommand:
+    fid: str
 
 
 @extend_schema_field(
@@ -47,6 +54,12 @@ class StrictCharField(serializers.CharField):
     def to_internal_value(self, data: object) -> str:
         if not isinstance(data, str):
             self.fail("invalid")
+        if self.min_length is not None and len(data) < self.min_length:
+            self.fail(
+                "min_length",
+                min_length=self.min_length,
+                length=len(data),
+            )
         if self.max_length is not None and len(data) > self.max_length:
             self.fail(
                 "max_length",
@@ -56,19 +69,10 @@ class StrictCharField(serializers.CharField):
         return super().to_internal_value(data)
 
 
-class ScoreChangeRequestSerializer(serializers.Serializer[object]):
+class StrictRequestSerializer(serializers.Serializer[object]):
     default_error_messages = {
         "invalid": "JSON 객체를 입력해 주세요.",
     }
-
-    delta = ScoreDeltaField(min_value=-100, max_value=100)
-    reason = StrictCharField(
-        required=False,
-        allow_blank=True,
-        default="",
-        max_length=200,
-        trim_whitespace=True,
-    )
 
     @override
     def run_validation(self, data: Any = serializers.empty) -> Any:
@@ -94,6 +98,17 @@ class ScoreChangeRequestSerializer(serializers.Serializer[object]):
                     code="unknown_field",
                 )
         return super().to_internal_value(data)
+
+
+class ScoreChangeRequestSerializer(StrictRequestSerializer):
+    delta = ScoreDeltaField(min_value=-100, max_value=100)
+    reason = StrictCharField(
+        required=False,
+        allow_blank=True,
+        default="",
+        max_length=200,
+        trim_whitespace=True,
+    )
 
     def validate_delta(self, value: int) -> int:
         if value == 0:
@@ -158,6 +173,69 @@ class ScoreChangeDataSerializer(serializers.Serializer[ScoreChange]):
         max_value=100,
     )
     createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+
+
+class PushDeviceRequestSerializer(StrictRequestSerializer):
+    fid = StrictCharField(
+        min_length=22,
+        max_length=22,
+        trim_whitespace=False,
+        validators=(
+            RegexValidator(
+                regex=FIREBASE_INSTALLATION_ID_PATTERN,
+                message="올바른 Firebase 기기 ID가 필요합니다.",
+                code="invalid_format",
+            ),
+        ),
+    )
+
+    def to_command(self) -> PushDeviceCommand:
+        fid = self.validated_data.get("fid")
+        if not isinstance(fid, str):
+            raise RuntimeError("Validated Firebase installation ID is not a string.")
+        return PushDeviceCommand(fid=fid)
+
+
+class PushDeviceRequestSerializerExtension(OpenApiSerializerExtension):
+    target_class = PushDeviceRequestSerializer
+
+    @override
+    def map_serializer(
+        self,
+        auto_schema: "AutoSchema",
+        direction: Direction,
+    ) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "fid": {
+                    "type": "string",
+                    "minLength": 22,
+                    "maxLength": 22,
+                    "pattern": FIREBASE_INSTALLATION_ID_PATTERN.pattern,
+                },
+            },
+            "required": ["fid"],
+        }
+
+
+@extend_schema_field({"type": "boolean", "const": True})
+class RegisteredTrueField(serializers.BooleanField):
+    pass
+
+
+@extend_schema_field({"type": "boolean", "const": False})
+class RegisteredFalseField(serializers.BooleanField):
+    pass
+
+
+class PushDeviceRegisteredDataSerializer(serializers.Serializer[object]):
+    registered = RegisteredTrueField(read_only=True)
+
+
+class PushDeviceUnregisteredDataSerializer(serializers.Serializer[object]):
+    registered = RegisteredFalseField(read_only=True)
 
 
 class ErrorDetailSerializer(serializers.Serializer[object]):
@@ -311,3 +389,15 @@ class ScoreChangeSuccessEnvelopeSerializer(serializers.Serializer[object]):
     resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
     error = NullOnlyField()
     success = ScoreChangeDataSerializer()
+
+
+class PushDeviceRegisteredSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = PushDeviceRegisteredDataSerializer()
+
+
+class PushDeviceUnregisteredSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = PushDeviceUnregisteredDataSerializer()
