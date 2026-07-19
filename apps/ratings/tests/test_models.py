@@ -1,8 +1,12 @@
+from datetime import timedelta
+
 import pytest
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, transaction
+from django.db.models.deletion import ProtectedError
+from django.utils import timezone
 
-from ..models import ScoreChange, ScoreChangeComment
+from ..models import DiaryEntry, ScoreChange, ScoreChangeComment
 
 pytestmark = pytest.mark.django_db
 
@@ -44,6 +48,59 @@ def test_participant_slot_is_constrained_to_a_known_slot(participant_pair):
 
     with pytest.raises(IntegrityError), transaction.atomic():
         participant.save(update_fields=("slot",))
+
+
+@pytest.mark.parametrize("content", ("", "   "), ids=("empty", "whitespace"))
+def test_diary_entry_content_cannot_be_blank(participant_pair, content):
+    with pytest.raises(IntegrityError), transaction.atomic():
+        DiaryEntry.objects.create(
+            author=participant_pair.first,
+            content=content,
+        )
+
+
+def test_diary_allows_multiple_entries_from_one_author(participant_pair):
+    entries = [
+        DiaryEntry.objects.create(
+            author=participant_pair.first,
+            content=content,
+        )
+        for content in ("아침 기록", "저녁 기록")
+    ]
+
+    assert (
+        list(DiaryEntry.objects.filter(author=participant_pair.first).order_by("pk"))
+        == entries
+    )
+
+
+def test_diary_entries_are_ordered_by_latest_post_time_then_pk(participant_pair):
+    entries = [
+        DiaryEntry.objects.create(
+            author=participant_pair.first,
+            content=content,
+        )
+        for content in ("먼저 쓴 글", "같은 시각의 첫 글", "같은 시각의 두 번째 글")
+    ]
+    latest_time = timezone.now()
+    DiaryEntry.objects.filter(pk=entries[0].pk).update(
+        created_at=latest_time - timedelta(minutes=1)
+    )
+    DiaryEntry.objects.filter(pk__in=(entries[1].pk, entries[2].pk)).update(
+        created_at=latest_time
+    )
+
+    assert list(DiaryEntry.objects.all()) == [entries[2], entries[1], entries[0]]
+
+
+def test_diary_entry_protects_its_author(participant_pair):
+    DiaryEntry.objects.create(
+        author=participant_pair.first,
+        content="보존할 기록",
+    )
+
+    with pytest.raises(ProtectedError):
+        participant_pair.first.delete()
 
 
 def test_score_change_delta_cannot_be_zero(participant_pair):

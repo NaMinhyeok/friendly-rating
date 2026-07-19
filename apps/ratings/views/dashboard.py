@@ -39,6 +39,15 @@ def history_view(request):
 
 @login_required
 @require_GET
+def diary_view(request):
+    get_current_participant(request)
+    response = render(request, "ratings/diary.html")
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@login_required
+@require_GET
 def score_change_thread_view(request, score_change_id: int):
     participant = get_current_participant(request)
     get_object_or_404(
