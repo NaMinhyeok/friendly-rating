@@ -98,7 +98,80 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
     assert set(document["paths"]) == {
         "/api/v1/push-devices/register/",
         "/api/v1/push-devices/unregister/",
+        "/api/v1/relationship-scores/",
         "/api/v1/score-changes/",
+    }
+
+
+def test_relationship_score_operation_declares_read_only_list_contract(client):
+    document = client.get(
+        reverse("api-schema"),
+        HTTP_ACCEPT="application/json",
+    ).json()
+    operation = document["paths"]["/api/v1/relationship-scores/"]["get"]
+
+    assert operation["security"] == [{"cookieAuth": []}]
+    assert "parameters" not in operation
+    assert "requestBody" not in operation
+    assert set(operation["responses"]) == {"200", "403", "406", "500"}
+    assert operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/RelationshipScoreListSuccessEnvelope"
+    }
+    assert operation["responses"]["403"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ReadForbiddenErrorEnvelope"
+    }
+
+    schemas = document["components"]["schemas"]
+    envelope = schemas["RelationshipScoreListSuccessEnvelope"]
+    assert set(envelope["required"]) == {"resultType", "error", "success"}
+    assert _enum_values(document, envelope["properties"]["resultType"]) == ["SUCCESS"]
+    assert _schema_types(document, envelope["properties"]["error"]) == {"null"}
+
+    list_data = schemas["RelationshipScoreListData"]
+    assert list_data["required"] == ["results"]
+    assert set(list_data["properties"]) == {"results"}
+    results = list_data["properties"]["results"]
+    assert results["type"] == "array"
+    assert results["items"] == {"$ref": "#/components/schemas/RelationshipScoreData"}
+
+    score = schemas["RelationshipScoreData"]
+    assert set(score["required"]) == {
+        "sourceParticipant",
+        "targetParticipant",
+        "currentScore",
+        "updatedAt",
+        "isMine",
+    }
+    assert set(score["properties"]) == {
+        "sourceParticipant",
+        "targetParticipant",
+        "currentScore",
+        "updatedAt",
+        "isMine",
+    }
+    assert score["properties"]["currentScore"]["minimum"] == 0
+    assert score["properties"]["currentScore"]["maximum"] == 100
+    assert score["properties"]["updatedAt"]["format"] == "date-time"
+    assert score["properties"]["isMine"]["type"] == "boolean"
+
+    participant = schemas["ParticipantSummary"]
+    assert set(participant["required"]) == {"slot", "displayName"}
+    assert set(participant["properties"]) == {"slot", "displayName"}
+    assert participant["properties"]["slot"]["minimum"] == 1
+    assert participant["properties"]["slot"]["maximum"] == 2
+    assert participant["properties"]["displayName"]["maxLength"] == 30
+
+    forbidden = schemas["ReadForbiddenErrorEnvelope"]
+    observed_pairs = {
+        (
+            _enum_values(document, variant["properties"]["errorType"])[0],
+            _enum_values(document, variant["properties"]["errorCode"])[0],
+        )
+        for variant in _error_variants(document, forbidden)
+    }
+    assert observed_pairs == {
+        ("AUTHENTICATION", "AUTHENTICATION_REQUIRED"),
+        ("AUTHORIZATION", "PARTICIPANT_REQUIRED"),
     }
 
 

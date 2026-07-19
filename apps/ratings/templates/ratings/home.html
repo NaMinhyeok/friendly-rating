@@ -16,79 +16,99 @@
     </form>
 </header>
 
-<main class="app-shell">
+<main
+    class="app-shell"
+    data-dashboard-root
+    data-scores-url="{% url 'api-v1:relationship-score-list' %}"
+    data-score-changes-url="{% url 'api-v1:score-change-list' %}"
+>
     {% include "ratings/_messages.html" %}
+    <noscript>
+        <section class="surface loading-state loading-state--error">
+            이 화면에서 마음을 확인하고 기록하려면 브라우저의 JavaScript를 켜 주세요.
+        </section>
+    </noscript>
 
     <section class="hero" aria-labelledby="dashboard-title">
-        <p class="eyebrow">{{ participant.display_name }}님의 마음 공간</p>
+        <p class="eyebrow" data-current-participant-space>우리의 마음 공간</p>
         <h1 id="dashboard-title">오늘 우리 사이는<br><span>몇 점일까요?</span></h1>
         <p>점수도 이유도 서로에게 솔직하게 보여요.</p>
     </section>
 
-    <section class="score-grid" aria-label="현재 친밀도 점수">
-        {% for score in scores %}
-            <article class="surface score-card{% if score.source_participant_id == participant.id %} score-card--mine{% endif %}">
-                <div class="score-card__topline">
-                    <span class="score-owner">
-                        {% if score.source_participant_id == participant.id %}내가 느끼는 마음{% else %}{{ score.source_participant.display_name }}님의 마음{% endif %}
-                    </span>
-                    {% if score.source_participant_id == participant.id %}<span class="pill">내 점수</span>{% endif %}
-                </div>
-                <p class="score-direction" aria-label="{{ score.source_participant.display_name }} → {{ score.target_participant.display_name }}">{{ score.source_participant.display_name }} <span aria-hidden="true">→</span> {{ score.target_participant.display_name }}</p>
-                <p class="score-value" aria-label="{{ score.current_score }}점"><strong>{{ score.current_score }}</strong><span>/ 100</span></p>
-                <div class="score-track" role="img" aria-label="100점 중 {{ score.current_score }}점">
-                    <span style="width: {{ score.current_score }}%"></span>
-                </div>
-            </article>
-        {% endfor %}
+    <section
+        class="score-grid"
+        aria-label="현재 친밀도 점수"
+        aria-busy="true"
+        data-score-list
+    >
+        <p class="surface loading-state" data-score-list-status role="status" aria-live="polite">
+            현재 마음을 불러오고 있어요…
+        </p>
     </section>
 
     <section class="surface change-card" aria-labelledby="change-title">
         <div class="section-heading">
             <div>
                 <p class="eyebrow">MY FEELING</p>
-                <h2 id="change-title">{{ own_score.target_participant.display_name }}님을 향한 마음</h2>
+                <h2 id="change-title"><span data-score-target>상대방</span>님을 향한 마음</h2>
             </div>
             <span class="heart-badge" aria-hidden="true">♥</span>
         </div>
 
-        <form method="post" action="{% url 'change-score' %}" novalidate>
+        <form data-score-change-form novalidate>
             {% csrf_token %}
-            {{ score_form.non_field_errors }}
+            <p class="form-status" data-score-form-status role="status" aria-live="polite"></p>
 
             <fieldset class="field-group">
-                <legend class="field-label">{{ score_form.operation.label }}</legend>
+                <legend class="field-label">변경 방향</legend>
                 <div class="segment-control">
-                    {% for radio in score_form.operation %}
-                        <label class="segment-option">
-                            {{ radio.tag }}
-                            <span>{% if radio.data.value == 'increase' %}+{% else %}−{% endif %} {{ radio.choice_label }}</span>
-                        </label>
-                    {% endfor %}
+                    <label class="segment-option">
+                        <input type="radio" name="operation" value="increase" checked>
+                        <span>+ 올리기</span>
+                    </label>
+                    <label class="segment-option">
+                        <input type="radio" name="operation" value="decrease">
+                        <span>− 내리기</span>
+                    </label>
                 </div>
-                {{ score_form.operation.errors }}
+                <ul id="error-operation" class="errorlist" data-error-for="operation" hidden></ul>
             </fieldset>
 
             <div class="field-group">
-                <label class="field-label" for="{{ score_form.amount.id_for_label }}">{{ score_form.amount.label }}</label>
+                <label class="field-label" for="id_amount">변경할 점수</label>
                 <div class="score-input-wrap">
-                    {{ score_form.amount }}
+                    <input
+                        id="id_amount"
+                        name="amount"
+                        type="number"
+                        inputmode="numeric"
+                        min="1"
+                        max="100"
+                        placeholder="점수 입력"
+                        required
+                    >
                     <span>점</span>
                 </div>
-                {{ score_form.amount.errors }}
+                <ul id="error-amount" class="errorlist" data-error-for="amount" hidden></ul>
             </div>
 
             <div class="field-group">
                 <div class="field-label-row">
-                    <label class="field-label" for="{{ score_form.reason.id_for_label }}">{{ score_form.reason.label }}</label>
+                    <label class="field-label" for="id_reason">이유 (선택)</label>
                     <span class="character-count"><span data-character-current>0</span>/200</span>
                 </div>
-                {{ score_form.reason }}
-                {{ score_form.reason.errors }}
+                <textarea
+                    id="id_reason"
+                    name="reason"
+                    rows="3"
+                    maxlength="200"
+                    placeholder="남기고 싶은 이유가 있다면 적어 주세요."
+                ></textarea>
+                <ul id="error-reason" class="errorlist" data-error-for="reason" hidden></ul>
             </div>
 
-            <button class="button button--primary button--full" type="submit">
-                이 마음 기록하기
+            <button class="button button--primary button--full" type="submit" disabled data-score-submit>
+                <span data-score-submit-label>이 마음 기록하기</span>
                 <span aria-hidden="true">♥</span>
             </button>
         </form>
@@ -146,6 +166,7 @@
 {% endblock %}
 
 {% block extra_scripts %}
+    <script type="module" src="{% static 'ratings/dashboard.js' %}"></script>
     {% if push_notifications_enabled %}
     {{ firebase_config|json_script:"firebase-config" }}
     <script type="module" src="{% static 'ratings/notifications.js' %}"></script>

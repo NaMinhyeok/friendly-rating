@@ -41,7 +41,15 @@ class PinLoginTests(TestCase):
 
         self.assertRedirects(response, reverse("home"))
         home_response = self.client.get(reverse("home"))
-        self.assertContains(home_response, "민수님의 마음 공간")
+        self.assertContains(home_response, "data-dashboard-root")
+        scores_response = self.client.get(
+            reverse("api-v1:relationship-score-list"),
+            HTTP_ACCEPT="application/json",
+        )
+        self.assertEqual(scores_response.status_code, 200)
+        own_score = scores_response.json()["success"]["results"][0]
+        self.assertTrue(own_score["isMine"])
+        self.assertEqual(own_score["sourceParticipant"]["displayName"], "민수")
 
     def test_login_requires_csrf_and_does_not_create_a_session(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)
@@ -75,10 +83,14 @@ class PinLoginTests(TestCase):
         )
 
         self.assertRedirects(response, reverse("home"))
-        self.assertContains(
-            csrf_client.get(reverse("home")),
-            "민수님의 마음 공간",
+        scores_response = csrf_client.get(
+            reverse("api-v1:relationship-score-list"),
+            HTTP_ACCEPT="application/json",
         )
+        self.assertEqual(scores_response.status_code, 200)
+        own_score = scores_response.json()["success"]["results"][0]
+        self.assertTrue(own_score["isMine"])
+        self.assertEqual(own_score["sourceParticipant"]["displayName"], "민수")
 
     def test_invalid_pin_is_rejected(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)

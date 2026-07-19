@@ -1,6 +1,7 @@
 from typing import Never, override
 
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db.models import Q
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import status
 from rest_framework.exceptions import NotFound
@@ -9,7 +10,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from ..models import Participant
+from ..models import Participant, RelationshipScore
 from ..services import (
     change_relationship_score,
     register_participant_push_device,
@@ -24,6 +25,9 @@ from .serializers import (
     PushDeviceRegisteredSuccessEnvelopeSerializer,
     PushDeviceRequestSerializer,
     PushDeviceUnregisteredSuccessEnvelopeSerializer,
+    ReadForbiddenErrorEnvelopeSerializer,
+    RelationshipScoreListDataSerializer,
+    RelationshipScoreListSuccessEnvelopeSerializer,
     RequestBodyTooLargeErrorEnvelopeSerializer,
     ScoreChangeDataSerializer,
     ScoreChangeRequestSerializer,
@@ -46,6 +50,46 @@ def _participant_for_request(request: Request) -> Participant:
         return Participant.objects.get(user_id=request.user.pk)
     except Participant.DoesNotExist as error:
         raise ParticipantRequired() from error
+
+
+class RelationshipScoreListView(APIView):
+    @extend_schema(
+        operation_id="listRelationshipScores",
+        summary="두 참가자의 관계 점수 조회",
+        description=(
+            "두 방향의 현재 관계 점수를 조회합니다. 현재 참가자의 outgoing score가 "
+            "먼저 오며 isMine으로 변경 가능한 점수를 식별할 수 있습니다."
+        ),
+        tags=("relationshipScores",),
+        responses={
+            200: RelationshipScoreListSuccessEnvelopeSerializer,
+            403: ReadForbiddenErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def get(self, request: Request) -> Response:
+        participant = _participant_for_request(request)
+        scores = list(
+            RelationshipScore.objects.select_related(
+                "source_participant",
+                "target_participant",
+            )
+            .filter(
+                Q(source_participant=participant) | Q(target_participant=participant),
+            )
+            .order_by("source_participant__slot")
+        )
+        scores.sort(
+            key=lambda score: score.source_participant_id != participant.pk,
+        )
+        serializer = RelationshipScoreListDataSerializer(
+            {"results": scores},
+            context={"participant_id": participant.pk},
+        )
+        response = Response(serializer.data)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
 
 
 class ScoreChangeListView(APIView):

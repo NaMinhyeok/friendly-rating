@@ -4,12 +4,18 @@ from .views import (
     ApiNotFoundView,
     PushDeviceRegisterView,
     PushDeviceUnregisterView,
+    RelationshipScoreListView,
     ScoreChangeListView,
 )
 
 app_name = "ratings-api"
 
 urlpatterns = [
+    path(
+        "relationship-scores/",
+        RelationshipScoreListView.as_view(),
+        name="relationship-score-list",
+    ),
     path(
         "score-changes/",
         ScoreChangeListView.as_view(),

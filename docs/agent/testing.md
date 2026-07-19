@@ -31,7 +31,7 @@
 | CSRF 또는 method 보안 | `Client(enforce_csrf_checks=True)`와 공개 URL | 403/405와 무쓰기 | middleware를 직접 호출 |
 | commit, row lock, 실제 transaction | `TransactionTestCase` | commit 경계, 직렬화, DB 기능 | SQLite 결과를 운영 근거로 사용 |
 | Firebase 등 외부 경계 | adapter가 사용하는 심볼을 patch | 공개 메시지, 실패 격리, 기기 상태 | 네트워크 호출, SDK 내부 구현 단언 |
-| template/PWA/static | HTTP 응답과 공개 파일 | 사용자 문구, metadata, cache/content type | template registry/물리 경로 고정 |
+| template/PWA/static | HTTP 응답과 공개 파일, 동작이 있는 JS는 Node 실행 테스트 | 사용자 문구, DOM/fetch 계약, metadata, cache/content type | 문자열 존재만으로 핵심 JS 동작 대체, template registry/물리 경로 고정 |
 | 배포·관리 명령 | 설정 파일 또는 `call_command` 계약 테스트 | migrate/provision 분리, check 무쓰기, health | 단순 문자열 snapshot만 검증 |
 | data migration | `MigrationExecutor`가 필요한 통합 테스트 | 이전 state에서 forward 적용 후 데이터/제약 | 현재 model을 historical migration에서 사용 |
 
@@ -66,6 +66,10 @@
 - 목록 API는 모든 형태가 `success.results`를 사용하고 page/cursor metadata가
   선언한 schema와 일치하는지 검증한다. OpenAPI 생성 검사는 runtime envelope,
   camelCase field, required/nullable 조건과 오류 component의 드리프트를 실패로 만든다.
+- 핵심 브라우저 adapter는 `apps/ratings/tests/js/`의 Node 내장 테스트로 실제 스크립트를
+  실행한다. signed delta 변환, 중복 submit 차단, 요청 중 입력 잠금, fetch 후 DOM
+  reconciliation처럼 문자열 검사로 보장할 수 없는 동작을 가장 작은 fake DOM과
+  fetch 경계로 검증한다. 별도 frontend framework나 build step은 추가하지 않는다.
 - DB constraint는 `full_clean()`만으로 대신하지 말고 실제 저장 시 DB가 보장하는지
   검증한다.
 - 트랜잭션 테스트는 성공한 row뿐 아니라 중간 쓰기 실패 시 모든 관련 row가 원래

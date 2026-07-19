@@ -51,6 +51,21 @@ run_step() {
     "$@"
 }
 
+check_node_runtime() {
+    if ! command -v node >/dev/null 2>&1; then
+        printf "Node.js 18 or newer is required for browser JavaScript tests.\n" >&2
+        return 1
+    fi
+
+    local node_major_version
+    node_major_version="$(node -p 'process.versions.node.split(".")[0]')"
+    if ((node_major_version < 18)); then
+        printf "Node.js 18 or newer is required; found %s.\n" \
+            "$(node --version)" >&2
+        return 1
+    fi
+}
+
 if [[ "$mode" == "all" ]]; then
     run_step "Verify dependency lock" uv lock --check
 fi
@@ -153,6 +168,9 @@ fi
 if [[ ${#test_arguments[@]} -eq 0 ]]; then
     test_arguments=(-q)
 fi
+run_step "Check browser JavaScript runtime" check_node_runtime
+run_step "Run browser JavaScript tests" \
+    node --test apps/ratings/tests/js/*.test.cjs
 run_step "Run test suite" \
     env "${test_environment[@]}" \
     uv run --no-sync pytest "${test_arguments[@]}"

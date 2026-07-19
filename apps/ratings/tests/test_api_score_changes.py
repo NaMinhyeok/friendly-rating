@@ -22,7 +22,7 @@ def _participant_client(participant):
     client.force_login(participant.user)
     home_response = client.get(reverse("home"))
     assert home_response.status_code == 200
-    csrf_token = csrf_token_from_form(home_response, reverse("change-score"))
+    csrf_token = csrf_token_from_form(home_response, reverse("logout"))
     return client, csrf_token
 
 
@@ -172,6 +172,15 @@ def test_participant_can_change_their_score_with_rendered_csrf_and_same_origin(
     assert change.relationship_score == participant_pair.first_to_second
     assert change.changed_by == participant_pair.first
     assert change.reason == "고마워"
+
+    scores_response = client.get(
+        reverse("api-v1:relationship-score-list"),
+        HTTP_ACCEPT="application/json",
+    )
+    assert scores_response.status_code == 200
+    scores = scores_response.json()["success"]["results"]
+    assert [score["currentScore"] for score in scores] == [13, 0]
+    assert [score["isMine"] for score in scores] == [True, False]
 
 
 def test_second_participant_changes_only_their_outgoing_score(participant_pair):
