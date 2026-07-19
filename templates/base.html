@@ -16,6 +16,7 @@
     <link rel="icon" type="image/png" sizes="192x192" href="{% static 'ratings/icons/icon-192.png' %}">
     <link rel="apple-touch-icon" sizes="180x180" href="{% static 'ratings/icons/apple-touch-icon.png' %}">
     <link rel="stylesheet" href="{% static 'ratings/app.css' %}">
+    <script defer src="{% static 'ratings/toast.js' %}"></script>
     <script defer src="{% static 'ratings/app.js' %}"></script>
     {% block extra_head %}{% endblock %}
 </head>
@@ -23,10 +24,10 @@
     <div class="ambient ambient--one" aria-hidden="true"></div>
     <div class="ambient ambient--two" aria-hidden="true"></div>
     <div
-        data-foreground-notification-region
+        data-toast-region
         role="status"
         aria-live="polite"
-        aria-atomic="true"
+        aria-atomic="false"
     ></div>
     {% block content %}{% endblock %}
     {% block extra_scripts %}{% endblock %}
