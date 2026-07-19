@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "woorisai-";
-const STATIC_CACHE = `${CACHE_PREFIX}static-v8`;
+const STATIC_CACHE = `${CACHE_PREFIX}static-v9`;
 const PUSH_HANDOFF_CACHE = `${CACHE_PREFIX}push-handoff-v1`;
 const PUSH_HANDOFF_KEY = "/__woorisai/pending-push-navigation";
 const PUSH_HANDOFF_TTL_MS = 5 * 60 * 1000;

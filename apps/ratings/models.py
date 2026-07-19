@@ -36,6 +36,30 @@ class Participant(models.Model):
         return self.display_name
 
 
+class DiaryEntry(models.Model):
+    author = models.ForeignKey(
+        Participant,
+        on_delete=models.PROTECT,
+        related_name="diary_entries",
+    )
+    content = models.CharField(max_length=1000)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        db_table = "diary_entry"
+        ordering = ("-created_at", "-pk")
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(content__regex=r"^\s*$"),
+                name="diary_entry_content_not_blank",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.author} · {self.created_at}"
+
+
 class RelationshipScore(models.Model):
     source_participant = models.OneToOneField(
         Participant,

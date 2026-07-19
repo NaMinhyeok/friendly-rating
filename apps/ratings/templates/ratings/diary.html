@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}우리 일기 · 우리 사이{% endblock %}
+{% block body_class %}app-page{% endblock %}
+
+{% block content %}
+<header class="app-header">
+    <a class="back-link" href="{% url 'home' %}"><span aria-hidden="true">←</span> 홈으로</a>
+    <span class="mini-brand"><span class="mini-brand__mark" aria-hidden="true">♥</span><span>우리 사이</span></span>
+</header>
+
+<main
+    class="app-shell app-shell--narrow"
+    data-diary-root
+    data-diary-entries-url="{% url 'api-v1:diary-entry-list' %}"
+>
+    <noscript>
+        <section class="surface loading-state loading-state--error">
+            우리 일기를 쓰고 확인하려면 브라우저의 JavaScript를 켜 주세요.
+        </section>
+    </noscript>
+
+    <section class="hero hero--compact diary-hero" aria-labelledby="diary-title">
+        <p class="eyebrow">OUR DIARY</p>
+        <h1 id="diary-title">우리 일기</h1>
+        <p>점수로는 다 담지 못한 오늘의 이야기를 함께 남겨요.</p>
+    </section>
+
+    <section class="surface diary-compose" aria-labelledby="diary-compose-title">
+        <div class="section-heading diary-compose__heading">
+            <div>
+                <p class="eyebrow">SHARE A STORY</p>
+                <h2 id="diary-compose-title">이야기 남기기</h2>
+            </div>
+            <span class="diary-compose__mark" aria-hidden="true">✎</span>
+        </div>
+
+        <form data-diary-create-form aria-busy="false" novalidate>
+            {% csrf_token %}
+            <p class="form-status" data-diary-create-status role="status" aria-live="polite"></p>
+
+            <div class="field-group">
+                <div class="field-label-row">
+                    <label class="field-label" for="id_diary_content">우리에게 남길 이야기</label>
+                    <span class="character-count"><span data-diary-character-current>0</span>/1000</span>
+                </div>
+                <textarea
+                    id="id_diary_content"
+                    name="content"
+                    rows="7"
+                    placeholder="지금 나누고 싶은 순간이나 마음을 적어 주세요."
+                    aria-describedby="diary-content-help error-content"
+                    required
+                    disabled
+                ></textarea>
+                <p id="diary-content-help" class="field-help">이 글은 우리 둘에게만 보여요.</p>
+                <ul id="error-content" class="errorlist" data-diary-error-for="content" hidden></ul>
+            </div>
+
+            <button class="button button--primary button--full" type="submit" data-diary-create-submit disabled>
+                <span data-diary-create-submit-label>일기 남기기</span>
+                <span aria-hidden="true">♡</span>
+            </button>
+        </form>
+    </section>
+
+    <section class="diary-entries" aria-labelledby="diary-entries-title">
+        <div class="diary-entries__heading">
+            <div>
+                <p class="eyebrow">OUR STORIES</p>
+                <h2 id="diary-entries-title">차곡차곡 쌓인 이야기</h2>
+            </div>
+        </div>
+
+        <div data-diary-content aria-busy="true">
+            <p class="surface loading-state" data-diary-list-status role="status" aria-live="polite">
+                우리 일기를 불러오고 있어요…
+            </p>
+
+            <ol class="diary-list" data-diary-list hidden></ol>
+
+            <section class="surface empty-state" data-diary-empty hidden>
+                <span aria-hidden="true">♡</span>
+                <h2>아직 일기가 없어요</h2>
+                <p>지금 나누고 싶은 이야기를 첫 글로 남겨 보세요.</p>
+                <button class="button button--soft" type="button" data-diary-focus-compose>첫 이야기 남기기</button>
+            </section>
+
+            <nav class="pagination" aria-label="우리 일기 페이지" data-diary-pagination hidden></nav>
+        </div>
+    </section>
+</main>
+{% endblock %}
+
+{% block extra_scripts %}
+    <script type="module" src="{% static 'ratings/diary.js' %}"></script>
+{% endblock %}

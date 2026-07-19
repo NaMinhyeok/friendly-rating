@@ -412,6 +412,15 @@ textarea:focus {
   background: rgba(255, 255, 255, 0.7);
 }
 
+.text-button--danger {
+  color: #a5423c;
+}
+
+.text-button--danger:hover {
+  color: #8f312c;
+  background: #fff0ed;
+}
+
 .back-link {
   display: inline-flex;
   align-items: center;
@@ -879,6 +888,11 @@ textarea:focus {
   color: var(--sage);
   background: var(--sage-soft);
   font-weight: 850;
+}
+
+.diary-link__icon {
+  color: var(--coral-dark);
+  background: var(--coral-soft);
 }
 
 .history-link strong,
@@ -1457,6 +1471,168 @@ textarea:focus {
   font-weight: 600;
 }
 
+.diary-hero {
+  padding-bottom: 1.75rem;
+}
+
+.diary-compose {
+  padding: 1.2rem;
+}
+
+.diary-compose__heading {
+  margin-bottom: 1.2rem;
+}
+
+.diary-compose__mark {
+  display: grid;
+  width: 2.6rem;
+  height: 2.6rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 14px;
+  color: var(--coral-dark);
+  background: var(--coral-soft);
+  font-size: 1.05rem;
+  font-weight: 850;
+}
+
+.diary-entries {
+  margin-top: 2.2rem;
+}
+
+.diary-entries__heading {
+  margin-bottom: 0.9rem;
+  padding: 0 0.25rem;
+}
+
+.diary-entries__heading .eyebrow {
+  margin-bottom: 0.2rem;
+}
+
+.diary-entries__heading h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  letter-spacing: -0.035em;
+}
+
+.diary-list {
+  display: grid;
+  gap: 0.85rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diary-list__item {
+  min-width: 0;
+}
+
+.diary-card {
+  padding: 1.1rem;
+}
+
+.diary-card--mine {
+  border-color: rgba(232, 103, 88, 0.22);
+}
+
+.diary-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.diary-card__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.diary-card__identity > div {
+  min-width: 0;
+}
+
+.diary-card__identity strong,
+.diary-card__identity time {
+  display: block;
+}
+
+.diary-card__identity strong {
+  overflow: hidden;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.diary-card__identity time {
+  margin-top: 0.12rem;
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.diary-card__avatar {
+  display: grid;
+  width: 2.35rem;
+  height: 2.35rem;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 999px;
+  color: var(--coral-dark);
+  background: var(--coral-soft);
+  font-size: 0.8rem;
+  font-weight: 850;
+}
+
+.diary-card:not(.diary-card--mine) .diary-card__avatar {
+  color: #55765e;
+  background: var(--sage-soft);
+}
+
+.diary-card__actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.1rem;
+}
+
+.diary-card__content {
+  margin: 1rem 0;
+  color: #51423e;
+  font-size: 0.94rem;
+  line-height: 1.72;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.diary-card > footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.7rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.68rem;
+}
+
+.diary-card--editing {
+  border-color: rgba(232, 103, 88, 0.34);
+  box-shadow: var(--shadow);
+}
+
+.diary-edit-form textarea {
+  min-height: 9rem;
+}
+
+.diary-edit-form .form-status {
+  margin: 0 0 0.7rem;
+}
+
+.diary-edit-form__actions {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1fr);
+  gap: 0.55rem;
+}
+
 @media (min-width: 42rem) {
   .auth-shell {
     width: min(100% - 3rem, 58rem);
@@ -1495,6 +1671,11 @@ textarea:focus {
 
   .notification-card {
     padding: 1.3rem 1.5rem;
+  }
+
+  .diary-compose,
+  .diary-card {
+    padding: 1.4rem 1.5rem;
   }
 
   .media-selection:not(.media-selection--single) {
