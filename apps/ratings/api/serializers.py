@@ -129,6 +129,10 @@ class ScoreChangeRequestSerializer(StrictRequestSerializer):
         return ScoreChangeCommand(delta=delta, reason=reason)
 
 
+class ScoreChangePageQuerySerializer(StrictRequestSerializer):
+    pageNumber = serializers.IntegerField(default=1, min_value=1)
+
+
 class ScoreChangeRequestSerializerExtension(OpenApiSerializerExtension):
     target_class = ScoreChangeRequestSerializer
 
@@ -160,7 +164,7 @@ class ScoreChangeRequestSerializerExtension(OpenApiSerializerExtension):
 
 class ScoreChangeDataSerializer(serializers.Serializer[ScoreChange]):
     id = serializers.IntegerField(read_only=True)
-    delta = serializers.IntegerField(
+    delta = ScoreDeltaField(
         read_only=True,
         min_value=-100,
         max_value=100,
@@ -182,6 +186,52 @@ class ParticipantSummarySerializer(serializers.Serializer[Participant]):
         read_only=True,
         max_length=30,
     )
+
+
+class ScoreChangeHistoryDataSerializer(serializers.Serializer[ScoreChange]):
+    id = serializers.IntegerField(read_only=True, min_value=1)
+    sourceParticipant = ParticipantSummarySerializer(
+        source="relationship_score.source_participant",
+        read_only=True,
+    )
+    targetParticipant = ParticipantSummarySerializer(
+        source="relationship_score.target_participant",
+        read_only=True,
+    )
+    changedBy = ParticipantSummarySerializer(source="changed_by", read_only=True)
+    delta = ScoreDeltaField(
+        read_only=True,
+        min_value=-100,
+        max_value=100,
+    )
+    reason = serializers.CharField(read_only=True, max_length=200)
+    resultingScore = serializers.IntegerField(
+        source="resulting_score",
+        read_only=True,
+        min_value=0,
+        max_value=100,
+    )
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+
+
+@extend_schema_field({"type": "integer", "const": 20})
+class ScoreChangePageSizeField(serializers.IntegerField):
+    pass
+
+
+class PageNumberPagingSerializer(serializers.Serializer[object]):
+    pageNumber = serializers.IntegerField(min_value=1)
+    pageSize = ScoreChangePageSizeField()
+    hasNext = serializers.BooleanField()
+    totalCount = serializers.IntegerField(min_value=0)
+
+
+class ScoreChangePageDataSerializer(serializers.Serializer[object]):
+    results = serializers.ListField(
+        child=ScoreChangeHistoryDataSerializer(),
+        max_length=20,
+    )
+    paging = PageNumberPagingSerializer()
 
 
 class RelationshipScoreDataSerializer(serializers.Serializer[RelationshipScore]):
@@ -325,6 +375,11 @@ class NotAcceptableApiErrorSerializer(EmptyDetailsApiErrorSerializer):
     errorCode = serializers.ChoiceField(choices=(ErrorCode.NOT_ACCEPTABLE.value,))
 
 
+class NotFoundApiErrorSerializer(EmptyDetailsApiErrorSerializer):
+    errorType = serializers.ChoiceField(choices=(ErrorType.NOT_FOUND.value,))
+    errorCode = serializers.ChoiceField(choices=(ErrorCode.NOT_FOUND.value,))
+
+
 class ScoreOutOfRangeApiErrorSerializer(EmptyDetailsApiErrorSerializer):
     errorType = serializers.ChoiceField(choices=(ErrorType.CONFLICT.value,))
     errorCode = serializers.ChoiceField(choices=(ErrorCode.SCORE_OUT_OF_RANGE.value,))
@@ -386,6 +441,10 @@ class BadRequestErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     )
 
 
+class InvalidInputErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = InvalidInputApiErrorSerializer()
+
+
 class ForbiddenErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     error = PolymorphicProxySerializer(
         component_name="ForbiddenApiError",
@@ -419,6 +478,10 @@ class NotAcceptableErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     error = NotAcceptableApiErrorSerializer()
 
 
+class NotFoundErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
+    error = NotFoundApiErrorSerializer()
+
+
 class ScoreOutOfRangeErrorEnvelopeSerializer(ErrorEnvelopeBaseSerializer):
     error = ScoreOutOfRangeApiErrorSerializer()
 
@@ -439,6 +502,12 @@ class ScoreChangeSuccessEnvelopeSerializer(serializers.Serializer[object]):
     resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
     error = NullOnlyField()
     success = ScoreChangeDataSerializer()
+
+
+class ScoreChangePageSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = ScoreChangePageDataSerializer()
 
 
 class RelationshipScoreListSuccessEnvelopeSerializer(serializers.Serializer[object]):

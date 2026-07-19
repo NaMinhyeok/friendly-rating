@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load static %}
 
 {% block title %}마음 기록 · 우리 사이{% endblock %}
 {% block body_class %}app-page{% endblock %}
@@ -9,62 +10,42 @@
     <span class="mini-brand"><span class="mini-brand__mark" aria-hidden="true">♥</span><span>우리 사이</span></span>
 </header>
 
-<main class="app-shell app-shell--narrow">
+<main
+    class="app-shell app-shell--narrow"
+    data-history-root
+    data-history-url="{% url 'api-v1:score-change-list' %}"
+>
+    <noscript>
+        <section class="surface loading-state loading-state--error">
+            마음 기록을 확인하려면 브라우저의 JavaScript를 켜 주세요.
+        </section>
+    </noscript>
+
     <section class="hero hero--compact" aria-labelledby="history-title">
         <p class="eyebrow">OUR MEMORIES</p>
         <h1 id="history-title">우리의 마음 기록</h1>
         <p>작은 순간들이 모여 지금의 사이가 되었어요.</p>
     </section>
 
-    {% if page.object_list %}
-        <ol class="timeline">
-            {% for change in page %}
-                <li class="timeline-item">
-                    <span class="timeline-dot" aria-hidden="true"></span>
-                    <article class="surface history-card">
-                        <div class="history-card__header">
-                            <div>
-                                <p class="history-direction">{{ change.relationship_score.source_participant.display_name }} → {{ change.relationship_score.target_participant.display_name }}</p>
-                                <time datetime="{{ change.created_at|date:'c' }}">{{ change.created_at|date:"Y.m.d H:i" }}</time>
-                            </div>
-                            <strong class="delta{% if change.delta > 0 %} delta--positive{% else %} delta--negative{% endif %}">
-                                {% if change.delta > 0 %}+{% endif %}{{ change.delta }}점
-                            </strong>
-                        </div>
-                        {% if change.reason %}
-                            <p class="history-reason">“{{ change.reason }}”</p>
-                        {% endif %}
-                        <footer>
-                            <span>변경자 {{ change.changed_by.display_name }}</span>
-                            <span aria-label="변경 후 {{ change.resulting_score }}점">변경 후 <strong>{{ change.resulting_score }}점</strong></span>
-                        </footer>
-                    </article>
-                </li>
-            {% endfor %}
-        </ol>
-    {% else %}
-        <section class="surface empty-state">
+    <section aria-busy="true" data-history-content>
+        <p class="surface loading-state" data-history-status role="status" aria-live="polite">
+            마음 기록을 불러오고 있어요…
+        </p>
+
+        <ol class="timeline" data-history-list hidden></ol>
+
+        <section class="surface empty-state" data-history-empty hidden>
             <span aria-hidden="true">♡</span>
             <h2>아직 기록이 없어요</h2>
             <p>첫 마음을 남기면 여기에 차곡차곡 쌓여요.</p>
             <a class="button button--primary" href="{% url 'home' %}">첫 기록 남기기</a>
         </section>
-    {% endif %}
 
-    {% if page.paginator.num_pages > 1 %}
-        <nav class="pagination" aria-label="변경 기록 페이지">
-            {% if page.has_previous %}
-                <a href="?page={{ page.previous_page_number }}">← 이전</a>
-            {% else %}
-                <span></span>
-            {% endif %}
-            <strong>{{ page.number }} <span>/ {{ page.paginator.num_pages }}</span></strong>
-            {% if page.has_next %}
-                <a href="?page={{ page.next_page_number }}">다음 →</a>
-            {% else %}
-                <span></span>
-            {% endif %}
-        </nav>
-    {% endif %}
+        <nav class="pagination" aria-label="변경 기록 페이지" data-history-pagination hidden></nav>
+    </section>
 </main>
+{% endblock %}
+
+{% block extra_scripts %}
+    <script type="module" src="{% static 'ratings/history.js' %}"></script>
 {% endblock %}

@@ -237,6 +237,114 @@ def test_score_change_operation_declares_session_csrf_json_and_status_contract(c
     }
 
 
+def test_score_change_history_operation_declares_page_number_list_contract(client):
+    document = client.get(
+        reverse("api-schema"),
+        HTTP_ACCEPT="application/json",
+    ).json()
+    operation = document["paths"]["/api/v1/score-changes/"]["get"]
+
+    assert operation["security"] == [{"cookieAuth": []}]
+    assert "requestBody" not in operation
+    assert operation["parameters"] == [
+        {
+            "in": "query",
+            "name": "pageNumber",
+            "schema": {
+                "type": "integer",
+                "minimum": 1,
+                "default": 1,
+            },
+        }
+    ]
+    response_components = {
+        "200": "ScoreChangePageSuccessEnvelope",
+        "400": "InvalidInputErrorEnvelope",
+        "403": "ReadForbiddenErrorEnvelope",
+        "404": "NotFoundErrorEnvelope",
+        "406": "NotAcceptableErrorEnvelope",
+        "500": "InternalServerErrorEnvelope",
+    }
+    assert set(operation["responses"]) == set(response_components)
+    for status_code, component_name in response_components.items():
+        assert operation["responses"][status_code]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": f"#/components/schemas/{component_name}"}
+
+    schemas = document["components"]["schemas"]
+    envelope = schemas["ScoreChangePageSuccessEnvelope"]
+    assert set(envelope["required"]) == {"resultType", "error", "success"}
+    assert _enum_values(document, envelope["properties"]["resultType"]) == ["SUCCESS"]
+    assert _schema_types(document, envelope["properties"]["error"]) == {"null"}
+    assert envelope["properties"]["success"] == {
+        "$ref": "#/components/schemas/ScoreChangePageData"
+    }
+
+    page_data = schemas["ScoreChangePageData"]
+    assert set(page_data["required"]) == {"results", "paging"}
+    assert set(page_data["properties"]) == {"results", "paging"}
+    assert page_data["properties"]["results"] == {
+        "type": "array",
+        "maxItems": 20,
+        "items": {"$ref": "#/components/schemas/ScoreChangeHistoryData"},
+    }
+    assert page_data["properties"]["paging"] == {
+        "$ref": "#/components/schemas/PageNumberPaging"
+    }
+
+    item = schemas["ScoreChangeHistoryData"]
+    item_fields = {
+        "id",
+        "sourceParticipant",
+        "targetParticipant",
+        "changedBy",
+        "delta",
+        "reason",
+        "resultingScore",
+        "createdAt",
+    }
+    assert set(item["required"]) == item_fields
+    assert set(item["properties"]) == item_fields
+    assert item["properties"]["id"]["minimum"] == 1
+    assert item["properties"]["delta"]["minimum"] == -100
+    assert item["properties"]["delta"]["maximum"] == 100
+    assert item["properties"]["delta"]["not"] == {"const": 0}
+    assert item["properties"]["reason"]["maxLength"] == 200
+    assert item["properties"]["resultingScore"]["minimum"] == 0
+    assert item["properties"]["resultingScore"]["maximum"] == 100
+    assert item["properties"]["createdAt"]["format"] == "date-time"
+
+    paging = schemas["PageNumberPaging"]
+    assert set(paging["required"]) == {
+        "pageNumber",
+        "pageSize",
+        "hasNext",
+        "totalCount",
+    }
+    assert set(paging["properties"]) == set(paging["required"])
+    assert paging["properties"]["pageNumber"]["minimum"] == 1
+    assert paging["properties"]["pageSize"] == {
+        "type": "integer",
+        "const": 20,
+    }
+    assert paging["properties"]["hasNext"]["type"] == "boolean"
+    assert paging["properties"]["totalCount"]["minimum"] == 0
+
+    invalid_input = schemas["InvalidInputErrorEnvelope"]
+    invalid_error = _error_variants(document, invalid_input)[0]
+    assert _enum_values(document, invalid_error["properties"]["errorCode"]) == [
+        "INVALID_INPUT"
+    ]
+    not_found = schemas["NotFoundErrorEnvelope"]
+    not_found_error = _error_variants(document, not_found)[0]
+    assert _enum_values(document, not_found_error["properties"]["errorType"]) == [
+        "NOT_FOUND"
+    ]
+    assert _enum_values(document, not_found_error["properties"]["errorCode"]) == [
+        "NOT_FOUND"
+    ]
+
+
 def test_push_device_operations_declare_strict_request_and_envelope_contract(client):
     document = client.get(
         reverse("api-schema"),
