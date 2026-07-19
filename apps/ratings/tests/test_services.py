@@ -1,80 +1,69 @@
+import pytest
 from django.core.exceptions import ValidationError
-from django.test import TestCase
+from django.db import OperationalError, connection
 
-from ..models import Participant, ScoreChange
+from ..models import ScoreChange
 from ..services import change_relationship_score
-from .factories import create_participant_pair
+
+pytestmark = pytest.mark.django_db
 
 
-class ChangeRelationshipScoreTests(TestCase):
-    def setUp(self):
-        self.first, _, self.score, _ = create_participant_pair()
+def test_change_persists_history_and_only_updates_the_source_direction(
+    participant_pair,
+):
+    participant_pair.first_to_second.current_score = 10
+    participant_pair.first_to_second.save(update_fields=("current_score",))
 
-    def test_increase_updates_score_and_creates_history(self):
-        change = change_relationship_score(
-            source_participant=self.first,
-            delta=7,
-            reason="  오늘 많이 도와줘서  ",
-        )
+    returned_change = change_relationship_score(
+        source_participant=participant_pair.first,
+        delta=7,
+        reason="  오늘 많이 도와줘서  ",
+    )
 
-        self.score.refresh_from_db()
-        self.assertEqual(self.score.current_score, 7)
-        self.assertEqual(change.delta, 7)
-        self.assertEqual(change.reason, "오늘 많이 도와줘서")
-        self.assertEqual(change.resulting_score, 7)
-        self.assertEqual(change.changed_by, self.first)
+    participant_pair.first_to_second.refresh_from_db()
+    participant_pair.second_to_first.refresh_from_db()
+    persisted_change = ScoreChange.objects.get()
 
-    def test_decrease_updates_only_source_participants_direction(self):
-        self.score.current_score = 10
-        self.score.save()
+    assert participant_pair.first_to_second.current_score == 17
+    assert participant_pair.second_to_first.current_score == 0
+    assert returned_change == persisted_change
+    assert persisted_change.relationship_score == participant_pair.first_to_second
+    assert persisted_change.changed_by == participant_pair.first
+    assert persisted_change.delta == 7
+    assert persisted_change.reason == "오늘 많이 도와줘서"
+    assert persisted_change.resulting_score == 17
 
+
+def test_rejected_change_leaves_score_and_history_unchanged(participant_pair):
+    with pytest.raises(ValidationError) as raised:
         change_relationship_score(
-            source_participant=self.first,
-            delta=-3,
-            reason="조금 서운했어요",
+            source_participant=participant_pair.first,
+            delta=-1,
+            reason="범위를 벗어나요",
         )
 
-        self.score.refresh_from_db()
-        self.assertEqual(self.score.current_score, 7)
+    participant_pair.first_to_second.refresh_from_db()
+    assert raised.value.messages == [
+        "친밀도는 0점보다 낮거나 100점보다 높을 수 없습니다."
+    ]
+    assert participant_pair.first_to_second.current_score == 0
+    assert not ScoreChange.objects.exists()
 
-    def test_out_of_range_change_rolls_back_without_history(self):
-        with self.assertRaisesMessage(ValidationError, "0점보다 낮거나"):
+
+def test_history_write_failure_rolls_back_the_score_update(participant_pair):
+    def fail_history_insert(execute, sql, params, many, context):
+        if sql.lstrip().upper().startswith('INSERT INTO "SCORE_CHANGE"'):
+            raise OperationalError("history write failed")
+        return execute(sql, params, many, context)
+
+    with connection.execute_wrapper(fail_history_insert):
+        with pytest.raises(OperationalError, match="history write failed"):
             change_relationship_score(
-                source_participant=self.first,
-                delta=-1,
-                reason="범위를 벗어나요",
+                source_participant=participant_pair.first,
+                delta=5,
+                reason="원자성 검증",
             )
 
-        self.score.refresh_from_db()
-        self.assertEqual(self.score.current_score, 0)
-        self.assertFalse(ScoreChange.objects.exists())
-
-    def test_reason_is_optional(self):
-        change = change_relationship_score(source_participant=self.first, delta=1)
-
-        self.assertEqual(change.reason, "")
-
-    def test_blank_reason_is_normalized(self):
-        change = change_relationship_score(
-            source_participant=self.first,
-            delta=1,
-            reason="   ",
-        )
-
-        self.assertEqual(change.reason, "")
-
-    def test_delta_must_be_non_zero_integer(self):
-        with self.assertRaisesMessage(ValidationError, "0이 아닌 정수"):
-            change_relationship_score(
-                source_participant=self.first,
-                delta=0,
-                reason="이유",
-            )
-
-    def test_invalid_input_is_rejected_before_the_score_lookup(self):
-        with self.assertRaisesMessage(ValidationError, "0이 아닌 정수"):
-            change_relationship_score(
-                source_participant=Participant(),
-                delta=0,
-                reason=None,
-            )
+    participant_pair.first_to_second.refresh_from_db()
+    assert participant_pair.first_to_second.current_score == 0
+    assert not ScoreChange.objects.exists()

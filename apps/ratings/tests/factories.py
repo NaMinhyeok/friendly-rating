@@ -1,9 +1,18 @@
+from typing import NamedTuple
+
 from django.contrib.auth import get_user_model
 
 from ..models import Participant, RelationshipScore
 
 
-def create_participant_pair():
+class ParticipantPair(NamedTuple):
+    first: Participant
+    second: Participant
+    first_to_second: RelationshipScore
+    second_to_first: RelationshipScore
+
+
+def create_participant_pair() -> ParticipantPair:
     user_model = get_user_model()
     first_user = user_model.objects.create_user(username="participant-1")
     second_user = user_model.objects.create_user(username="participant-2")
@@ -25,4 +34,9 @@ def create_participant_pair():
         source_participant=second,
         target_participant=first,
     )
-    return first, second, first_to_second, second_to_first
+    return ParticipantPair(
+        first=first,
+        second=second,
+        first_to_second=first_to_second,
+        second_to_first=second_to_first,
+    )

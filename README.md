@@ -66,8 +66,20 @@ templates/
 uv run ruff check .
 uv run ruff format --check .
 uv run python manage.py check
-uv run python manage.py test
+uv run pytest
 ```
+
+테스트 러너는 `pytest`와 `pytest-django`를 사용합니다. DB가 필요 없는 규칙은
+plain pytest 함수로 작성하고, ORM 통합 테스트는 `django_db`로 DB 의존성을
+표시합니다. 실제 커밋·행 잠금·마이그레이션 수명주기를 다루는 테스트는
+`TransactionTestCase`를 유지할 수 있습니다. 애플리케이션 DB와 Django Client는
+실제로 사용하며 Firebase 같은 외부 시스템 경계만 mock합니다.
+
+테스트는 경계마다 관찰 가능한 결과를 검증합니다. 순수 규칙은 반환값과 오류,
+서비스는 최종 DB 상태, HTTP 기능은 응답과 상태 변화, 외부 연동은 전달된 메시지를
+계약으로 삼습니다. Django registry, 내부 세션 키, 정확한 SQL이나 내부 호출 횟수는
+제품 계약으로 고정하지 않습니다. 단, 읽기 전용 명령의 무쓰기 보장과 Railway 배포
+설정처럼 운영 안전에 직접 연결되는 구성은 명시적인 계약 테스트로 유지합니다.
 
 `main` 브랜치의 변경은 GitHub Actions 검사를 통과한 PR로 병합되며 Railway가
 자동 배포합니다. 배포 전에는 마이그레이션만 실행하고 참가자 설정은 실행하지

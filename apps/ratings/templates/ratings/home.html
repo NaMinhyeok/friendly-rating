@@ -109,8 +109,8 @@
         aria-labelledby="notification-title"
         data-notification-settings
         data-vapid-key="{{ firebase_vapid_key|default:'' }}"
-        data-register-url="/notifications/devices/register/"
-        data-unregister-url="/notifications/devices/unregister/"
+        data-register-url="{% url 'register-push-device' %}"
+        data-unregister-url="{% url 'unregister-push-device' %}"
     >
         <div class="notification-card__heading">
             <span class="notification-card__icon" aria-hidden="true">♥</span>

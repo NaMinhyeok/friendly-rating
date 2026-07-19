@@ -41,7 +41,6 @@ class ParticipantSpec:
 
 @dataclass(frozen=True)
 class DriftIssue:
-    code: str
     reconcilable: bool
     message: str
 

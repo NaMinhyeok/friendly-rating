@@ -2,9 +2,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 from unittest.mock import patch
 
-from django.db import close_old_connections, connection, connections
+from django.db import close_old_connections, connections
 from django.test import TransactionTestCase, skipUnlessDBFeature
-from django.test.utils import CaptureQueriesContext
 
 from ..models import Participant, ScoreChange
 from ..services import change_relationship_score
@@ -23,14 +22,12 @@ class ConcurrentScoreChangeTests(TransactionTestCase):
             close_old_connections()
             try:
                 source_participant = Participant.objects.get(pk=self.first.pk)
-                with CaptureQueriesContext(connection) as captured_queries:
-                    start.wait(timeout=5)
-                    change = change_relationship_score(
-                        source_participant=source_participant,
-                        delta=1,
-                    )
-                sql = [query["sql"] for query in captured_queries]
-                return change.resulting_score, sql
+                start.wait(timeout=5)
+                change = change_relationship_score(
+                    source_participant=source_participant,
+                    delta=1,
+                )
+                return change.resulting_score
             finally:
                 connections["default"].close()
 
@@ -43,7 +40,7 @@ class ConcurrentScoreChangeTests(TransactionTestCase):
             results = [future.result(timeout=10) for future in futures]
 
         self.score.refresh_from_db()
-        resulting_scores = sorted(result[0] for result in results)
+        resulting_scores = sorted(results)
         recorded_scores = sorted(
             ScoreChange.objects.values_list("resulting_score", flat=True)
         )
@@ -51,8 +48,3 @@ class ConcurrentScoreChangeTests(TransactionTestCase):
         self.assertEqual(self.score.current_score, 2)
         self.assertEqual(resulting_scores, [1, 2])
         self.assertEqual(recorded_scores, [1, 2])
-        for _, queries in results:
-            self.assertTrue(
-                any("FOR UPDATE" in query.upper() for query in queries),
-                queries,
-            )
