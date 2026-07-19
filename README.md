@@ -63,9 +63,9 @@ MEDIA_DOWNLOAD_URL_TTL_SECONDS=300
 한 참가자가 연결하지 않은 업로드는 최대 20개, 요청 크기 합계 512MiB까지만 유지할
 수 있습니다. 완료됐지만 점수나 댓글에 연결되지 않은 파일은 24시간 뒤 만료됩니다.
 업로드가 끝나지 않은 `pending/` object는 R2 lifecycle rule로 하루 뒤 삭제하도록
-설정했고, 만료된 DB metadata와 `media/` object는 다음 명령을 정기적으로 실행해
-함께 정리합니다. 이 명령을 배포 전 migration 단계에 추가하지 말고 별도 일일 작업으로
-운영합니다.
+설정했고, 만료된 DB metadata와 `media/` object는 다음 명령으로 함께 정리할 수
+있습니다. 현재 운영 환경에는 자동 정리 Cron을 구성하지 않았으며, 이 명령을 배포 전
+migration 단계에 추가하지 않습니다.
 
 로컬에서는 `.env`를 명시해 상태를 확인하거나 정리할 수 있습니다.
 
@@ -77,20 +77,18 @@ uv run --env-file .env python manage.py cleanup_media_uploads --check
 uv run --env-file .env python manage.py cleanup_media_uploads --limit 100
 ```
 
-Railway의 별도 `media-cleanup` Cron 서비스는 `/railway.cron.json`을 사용하며, 매일
-`0 18 * * *`(UTC, 한국 시간 03:00)에 실행됩니다. 환경 변수가 런타임에 이미
-주입되므로 `.env`를 참조하지 않고 다음 명령을 사용합니다.
-
-서비스 변수는 운영 비밀을 복사하지 않고 Railway reference로 연결합니다.
-`DATABASE_URL`은 `${{Postgres.DATABASE_URL}}`을, `SECRET_KEY`,
-`MEDIA_UPLOADS_ENABLED`, 모든 `R2_*`와 미디어 URL TTL 변수는 각각 같은 이름의
-`${{web.<변수명>}}` 값을 참조합니다.
+Railway 운영 환경 안에서 수동으로 확인하거나 정리할 때는 런타임 변수가 이미
+주입되므로 `.env` 없이 실행합니다.
 
 ```bash
-python manage.py cleanup_media_uploads --limit 100
+# 운영 무쓰기 확인
+railway ssh -- python manage.py cleanup_media_uploads --check
+
+# 운영에서 한 번에 최대 100개 정리
+railway ssh -- python manage.py cleanup_media_uploads --limit 100
 ```
 
-하나라도 R2 삭제에 실패하면 명령은 0이 아닌 종료 코드로 끝나므로 일일 작업의 재시도나
+하나라도 R2 삭제에 실패하면 명령은 0이 아닌 종료 코드로 끝나므로 수동 작업의 재시도나
 경고 조건으로 사용할 수 있습니다. 사용자 미디어는 PWA offline cache에 저장하지
 않습니다.
 
