@@ -17,7 +17,6 @@ function initializeScoreThread(root) {
   const form = root.querySelector("[data-comment-form]");
   const textarea = form?.querySelector("[name=content]");
   const submitButton = form?.querySelector("[data-comment-submit]");
-  const commentMedia = initializeCommentMedia(root, form);
   if (
     !content ||
     !status ||
@@ -39,6 +38,9 @@ function initializeScoreThread(root) {
   let requiresRefresh = false;
   let refreshAfterSubmit = false;
   let loadSequence = 0;
+  const commentMedia = initializeCommentMedia(root, form, {
+    getScoreChangeId: () => currentThread?.id,
+  });
 
   const renderCurrentThread = () => {
     if (!currentThread) {
@@ -261,7 +263,7 @@ function initializeScoreThread(root) {
   loadThread().catch(() => undefined);
 }
 
-function initializeCommentMedia(root, form) {
+function initializeCommentMedia(root, form, { getScoreChangeId }) {
   const input = form?.querySelector("[data-comment-media-input]");
   const selection = form?.querySelector("[data-comment-media-selection]");
   const status = form?.querySelector("[data-comment-media-status]");
@@ -277,6 +279,93 @@ function initializeCommentMedia(root, form) {
     status.textContent = message;
     status.classList.toggle("media-status--error", state === "error");
     status.classList.toggle("media-status--success", state === "success");
+  };
+
+  const updateSelectionStatus = () => {
+    if (items.length === 0) {
+      setStatus("");
+      return;
+    }
+    if (items.some((item) => item.uploadState === "uploading")) {
+      setStatus("첨부 파일을 올리고 있어요…");
+      return;
+    }
+    if (items.some((item) => item.uploadState === "failed")) {
+      setStatus(
+        "첨부 파일을 업로드하지 못했어요. 댓글을 남길 때 다시 시도해 주세요.",
+        "error",
+      );
+      return;
+    }
+    if (items.every((item) => item.uploadId)) {
+      setStatus("첨부 파일 업로드를 마쳤어요.", "success");
+      return;
+    }
+    setStatus(`${items.length}개 파일을 선택했어요.`);
+  };
+
+  const uploadFailureMessage = (error) => {
+    const apiError = error instanceof ApiRequestError ? error : null;
+    return apiError?.apiError?.errorCode === "CSRF_FAILED"
+      ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
+      : apiError?.apiError?.reason ||
+          "첨부 파일을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+  };
+
+  const uploadContext = (scoreChangeId = getScoreChangeId()) => {
+    if (!Number.isInteger(scoreChangeId) || scoreChangeId < 1) {
+      return null;
+    }
+    return {
+      csrfToken: getCsrfToken(form),
+      purpose: "comment",
+      scoreChangeId,
+      uploadsUrl,
+    };
+  };
+
+  const startItemUpload = (item, context) => {
+    if (item.uploadId) {
+      updateUploadProgress(item, 100, "업로드 완료");
+      return Promise.resolve(item.uploadId);
+    }
+    if (item.uploadPromise) {
+      return item.uploadPromise;
+    }
+
+    item.uploadState = "uploading";
+    updateSelectionStatus();
+    const uploadPromise = ensureMediaUploaded(item, context)
+      .then((uploadId) => {
+        item.uploadState = "uploaded";
+        return uploadId;
+      })
+      .catch((error) => {
+        markUploadFailed(item);
+        throw error;
+      })
+      .finally(() => {
+        if (item.uploadPromise === uploadPromise) {
+          item.uploadPromise = null;
+        }
+        if (items.includes(item)) {
+          updateSelectionStatus();
+        }
+      });
+    item.uploadPromise = uploadPromise;
+    return uploadPromise;
+  };
+
+  const startBackgroundUpload = (item, context) => {
+    startItemUpload(item, context).catch((error) => {
+      if (!items.includes(item)) {
+        return;
+      }
+      if (redirectWhenAuthenticationExpired(error)) {
+        return;
+      }
+      setStatus(uploadFailureMessage(error), "error");
+    });
   };
 
   const clear = () => {
@@ -297,10 +386,8 @@ function initializeCommentMedia(root, form) {
           }
           revokePreviewUrl(item.previewUrl);
           items = items.filter((candidate) => candidate !== item);
-          setStatus(
-            items.length > 0 ? `${items.length}개 파일을 선택했어요.` : "",
-          );
           render();
+          updateSelectionStatus();
         },
         removeLabel: `${item.file.name} 삭제`,
       });
@@ -325,9 +412,15 @@ function initializeCommentMedia(root, form) {
       setStatus(error, "error");
       return;
     }
-    items.push(...files.map(createUploadItem));
-    setStatus(`${items.length}개 파일을 선택했어요.`);
+    const newItems = files.map(createUploadItem);
+    items.push(...newItems);
     render();
+    const context = uploadContext();
+    if (!context) {
+      updateSelectionStatus();
+      return;
+    }
+    newItems.forEach((item) => startBackgroundUpload(item, context));
   });
 
   return {
@@ -336,7 +429,10 @@ function initializeCommentMedia(root, form) {
       return items.length > 0;
     },
     resetUploads() {
-      items.forEach(markUploadFailed);
+      items.forEach((item) => {
+        item.uploadPromise = null;
+        markUploadFailed(item);
+      });
       if (items.length > 0) {
         setStatus("첨부 파일을 다시 업로드해 주세요.", "error");
       }
@@ -351,33 +447,24 @@ function initializeCommentMedia(root, form) {
       });
     },
     async upload({ csrfToken, purpose, scoreChangeId }) {
+      const selectedItems = [...items];
       try {
-        const uploadIds = [];
-        for (let index = 0; index < items.length; index += 1) {
-          const item = items[index];
-          setStatus(`${index + 1}/${items.length} 파일을 올리고 있어요…`);
-          uploadIds.push(
-            await ensureMediaUploaded(item, {
+        const uploadIds = await Promise.all(
+          selectedItems.map((item) =>
+            startItemUpload(item, {
               csrfToken,
               purpose,
               scoreChangeId,
               uploadsUrl,
             }),
-          );
-        }
-        setStatus("첨부 파일 업로드를 마쳤어요.", "success");
-        return uploadIds;
+          ),
+        );
+        updateSelectionStatus();
+        return uploadIds.filter((_, index) =>
+          items.includes(selectedItems[index]),
+        );
       } catch (error) {
-        const failedItem = items.find((item) => !item.uploadId);
-        if (failedItem) {
-          markUploadFailed(failedItem);
-        }
-        const apiError = error instanceof ApiRequestError ? error : null;
-        const message =
-          apiError?.apiError?.errorCode === "CSRF_FAILED"
-            ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
-            : apiError?.apiError?.reason ||
-              "첨부 파일을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+        const message = uploadFailureMessage(error);
         setStatus(message, "error");
         throw new MediaUploadError(message, error);
       }
@@ -419,6 +506,8 @@ function createUploadItem(file) {
     progressStatus: null,
     removeButton: null,
     uploadId: null,
+    uploadPromise: null,
+    uploadState: "pending",
   };
 }
 
@@ -669,6 +758,7 @@ function updateUploadProgress(item, value, label) {
 
 function markUploadFailed(item) {
   item.uploadId = null;
+  item.uploadState = "failed";
   updateUploadProgress(item, 0, "업로드 실패 · 다시 시도해 주세요");
 }
 

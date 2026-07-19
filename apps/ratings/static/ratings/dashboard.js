@@ -148,7 +148,10 @@ function initializeDashboard(root) {
       updateScorePreview(form, ownCurrentScore, selectedOperation);
       await loadScores();
     } catch (error) {
-      if (redirectWhenAuthenticationExpired(unwrapMediaUploadError(error))) {
+      if (
+        (error instanceof MediaUploadError && error.authenticationRedirected) ||
+        redirectWhenAuthenticationExpired(unwrapMediaUploadError(error))
+      ) {
         return;
       }
       if (error instanceof MediaUploadError) {
@@ -212,6 +215,59 @@ function initializeScoreMedia(root, form) {
     status.classList.toggle("media-status--success", state === "success");
   };
 
+  const startUpload = (uploadItem, { csrfToken, purpose }) => {
+    if (uploadItem.uploadId) {
+      if (uploadItem === item) {
+        setStatus("사진 업로드를 마쳤어요.", "success");
+      }
+      return Promise.resolve(uploadItem.uploadId);
+    }
+    if (uploadItem.uploadPromise) {
+      return uploadItem.uploadPromise;
+    }
+
+    if (uploadItem === item) {
+      setStatus("사진을 올리고 있어요…");
+    }
+    const uploadPromise = ensureMediaUploaded(uploadItem, {
+      csrfToken,
+      purpose,
+      uploadsUrl,
+    })
+      .then((uploadId) => {
+        if (uploadItem === item) {
+          setStatus("사진 업로드를 마쳤어요.", "success");
+        }
+        return uploadId;
+      })
+      .catch((error) => {
+        if (uploadItem === item && redirectWhenAuthenticationExpired(error)) {
+          throw new MediaUploadError(error.message, error, {
+            authenticationRedirected: true,
+          });
+        }
+        markUploadFailed(uploadItem);
+        const apiError = error instanceof ApiRequestError ? error : null;
+        const message =
+          apiError?.apiError?.errorCode === "CSRF_FAILED"
+            ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
+            : apiError?.apiError?.reason ||
+              "사진을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
+        if (uploadItem === item) {
+          setStatus(message, "error");
+        }
+        throw new MediaUploadError(message, error);
+      })
+      .finally(() => {
+        if (uploadItem.uploadPromise === uploadPromise) {
+          uploadItem.uploadPromise = null;
+        }
+      });
+    uploadItem.uploadPromise = uploadPromise;
+    uploadPromise.catch(() => undefined);
+    return uploadPromise;
+  };
+
   const clear = () => {
     revokePreviewUrl(item?.previewUrl);
     item = null;
@@ -255,8 +311,11 @@ function initializeScoreMedia(root, form) {
     }
     revokePreviewUrl(item?.previewUrl);
     item = createUploadItem(file);
-    setStatus("사진을 선택했어요.");
     render();
+    startUpload(item, {
+      csrfToken: getCsrfToken(form),
+      purpose: "scoreChange",
+    });
   });
 
   return {
@@ -278,28 +337,23 @@ function initializeScoreMedia(root, form) {
       }
     },
     async upload({ csrfToken, purpose }) {
-      if (!item) {
-        return [];
+      while (item) {
+        const uploadItem = item;
+        try {
+          const uploadId = await startUpload(uploadItem, {
+            csrfToken,
+            purpose,
+          });
+          if (uploadItem === item) {
+            return [uploadId];
+          }
+        } catch (error) {
+          if (uploadItem === item) {
+            throw error;
+          }
+        }
       }
-      try {
-        const uploadId = await ensureMediaUploaded(item, {
-          csrfToken,
-          purpose,
-          uploadsUrl,
-        });
-        setStatus("사진 업로드를 마쳤어요.", "success");
-        return [uploadId];
-      } catch (error) {
-        markUploadFailed(item);
-        const apiError = error instanceof ApiRequestError ? error : null;
-        const message =
-          apiError?.apiError?.errorCode === "CSRF_FAILED"
-            ? "보안 토큰이 만료되었어요. 페이지를 새로고침한 뒤 다시 시도해 주세요."
-            : apiError?.apiError?.reason ||
-              "사진을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.";
-        setStatus(message, "error");
-        throw new MediaUploadError(message, error);
-      }
+      return [];
     },
   };
 }
@@ -312,6 +366,7 @@ function createUploadItem(file) {
     progressStatus: null,
     removeButton: null,
     uploadId: null,
+    uploadPromise: null,
   };
 }
 
@@ -650,10 +705,11 @@ class ApiRequestError extends Error {
 }
 
 class MediaUploadError extends Error {
-  constructor(message, cause) {
+  constructor(message, cause, { authenticationRedirected = false } = {}) {
     super(message);
     this.name = "MediaUploadError";
     this.cause = cause;
+    this.authenticationRedirected = authenticationRedirected;
   }
 }
 

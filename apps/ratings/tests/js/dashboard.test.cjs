@@ -113,6 +113,16 @@ async function settleAsyncWork() {
   }
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, reject, resolve };
+}
+
 function descendantText(element) {
   return [
     element.textContent,
@@ -462,6 +472,109 @@ async function runDirectUploadLifecycle() {
   };
 }
 
+function createScoreMediaManagerHarness(uploadPromises) {
+  const input = new FakeElement();
+  const selection = new FakeElement();
+  const status = new FakeElement();
+  const csrf = new FakeElement({ value: "rendered-csrf-token" });
+  const form = new FakeElement();
+  form.selectors = {
+    "[data-score-media-input]": input,
+    "[data-score-media-selection]": selection,
+    "[data-score-media-status]": status,
+    "[name=csrfmiddlewaretoken]": csrf,
+  };
+  const root = new FakeElement({
+    dataset: { mediaUploadsUrl: "/api/v1/media-uploads/" },
+  });
+  const uploadCalls = [];
+  const revokedPreviewUrls = [];
+  const assignedLocations = [];
+  const sandbox = {
+    console,
+    document: {
+      createElement() {
+        return new FakeElement();
+      },
+      querySelector() {
+        return null;
+      },
+    },
+    form,
+    root,
+    uploadCalls,
+    uploadPromises,
+    URL: {
+      createObjectURL(file) {
+        return `blob:${file.name}`;
+      },
+      revokeObjectURL(url) {
+        revokedPreviewUrls.push(url);
+      },
+    },
+    window: {
+      location: {
+        assign(url) {
+          assignedLocations.push(url);
+        },
+        origin: "https://friendly.test",
+        pathname: "/",
+        search: "?from=upload",
+      },
+    },
+  };
+
+  vm.runInNewContext(
+    `${dashboardSource}
+      {
+        let uploadIndex = 0;
+        ensureMediaUploaded = (item, context) => {
+          globalThis.uploadCalls.push({
+            csrfToken: context.csrfToken,
+            fileName: item.file.name,
+            purpose: context.purpose,
+            uploadsUrl: context.uploadsUrl,
+          });
+          const promise = globalThis.uploadPromises[uploadIndex];
+          uploadIndex += 1;
+          return promise.then(
+            (uploadId) => {
+              item.uploadId = uploadId;
+              return uploadId;
+            },
+            (error) => {
+              if (error?.asApiRequestError) {
+                throw new ApiRequestError(error.status, error.apiError);
+              }
+              throw error;
+            },
+          );
+        };
+        globalThis.scoreMediaManager = initializeScoreMedia(
+          globalThis.root,
+          globalThis.form,
+        );
+      }
+    `,
+    sandbox,
+    { filename: dashboardScriptPath },
+  );
+
+  return {
+    assignedLocations,
+    input,
+    manager: sandbox.scoreMediaManager,
+    revokedPreviewUrls,
+    select(file) {
+      input.files = [file];
+      input.listeners.change();
+    },
+    selection,
+    status,
+    uploadCalls,
+  };
+}
+
 test("increase maps the entered amount to a positive delta", () => {
   assert.deepEqual(
     readCommand({ operation: "increase", amount: "3", reason: "  고마워  " }),
@@ -669,6 +782,361 @@ test("media upload runs intent, direct PUT, and completion in order", async () =
     progressLabel: "업로드 완료",
     result: uploadId,
   });
+});
+
+test("score image selection starts upload and submit reuses the in-flight work", async () => {
+  const pendingUpload = deferred();
+  const harness = createScoreMediaManagerHarness([pendingUpload.promise]);
+  const file = { name: "photo.jpg", size: 512, type: "image/jpeg" };
+
+  harness.select(file);
+
+  assert.deepEqual(JSON.parse(JSON.stringify(harness.uploadCalls)), [
+    {
+      csrfToken: "rendered-csrf-token",
+      fileName: "photo.jpg",
+      purpose: "scoreChange",
+      uploadsUrl: "/api/v1/media-uploads/",
+    },
+  ]);
+  assert.equal(harness.status.textContent, "사진을 올리고 있어요…");
+
+  const submitUpload = harness.manager.upload({
+    csrfToken: "rendered-csrf-token",
+    purpose: "scoreChange",
+  });
+  assert.equal(harness.uploadCalls.length, 1);
+
+  pendingUpload.resolve("00000000-0000-4000-8000-000000000001");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await submitUpload)),
+    ["00000000-0000-4000-8000-000000000001"],
+  );
+  assert.equal(harness.status.textContent, "사진 업로드를 마쳤어요.");
+
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        await harness.manager.upload({
+          csrfToken: "rendered-csrf-token",
+          purpose: "scoreChange",
+        }),
+      ),
+    ),
+    ["00000000-0000-4000-8000-000000000001"],
+  );
+  assert.equal(harness.uploadCalls.length, 1);
+});
+
+test("dashboard submits the current background upload without duplicating its lifecycle", async () => {
+  const directPut = deferred();
+  const uploadId = "00000000-0000-4000-8000-000000000006";
+  const file = { name: "attached.jpg", size: 512, type: "image/jpeg" };
+  const scoreList = new FakeElement();
+  scoreList.selectors["[data-score-list-status]"] = new FakeElement();
+  const form = new FakeElement();
+  const operation = new FakeElement({ name: "operation", value: "increase" });
+  const amount = new FakeElement({ value: "3" });
+  const reason = new FakeElement({ value: "사진과 함께" });
+  const csrf = new FakeElement({ value: "rendered-csrf-token" });
+  const mediaInput = new FakeElement();
+  const mediaSelection = new FakeElement();
+  const mediaStatus = new FakeElement();
+  form.selectors = {
+    "[data-character-current]": new FakeElement(),
+    "[data-score-form-status]": new FakeElement(),
+    "[data-score-media-input]": mediaInput,
+    "[data-score-media-selection]": mediaSelection,
+    "[data-score-media-status]": mediaStatus,
+    "[data-score-submit-label]": new FakeElement(),
+    "[name=amount]": amount,
+    "[name=csrfmiddlewaretoken]": csrf,
+    "[name=operation]:checked": operation,
+    "[name=reason]": reason,
+  };
+  form.selectorLists = {
+    'input:not([type="hidden"]), textarea': [
+      operation,
+      amount,
+      reason,
+      mediaInput,
+    ],
+    "[aria-invalid=true]": [],
+    "[data-error-for]": [],
+  };
+  const submitButton = new FakeElement({ disabled: true });
+  const root = new FakeElement({
+    dataset: {
+      mediaUploadsUrl: "/api/v1/media-uploads/",
+      scoreChangesUrl: "/api/v1/score-changes/",
+      scoresUrl: "/api/v1/relationship-scores/",
+    },
+  });
+  root.selectors = {
+    "[data-current-participant-space]": new FakeElement(),
+    "[data-score-change-form]": form,
+    "[data-score-list]": scoreList,
+    "[data-score-submit]": submitButton,
+    "[data-score-target]": new FakeElement(),
+  };
+
+  const fetchCalls = [];
+  let currentScore = 0;
+  const sandbox = {
+    console,
+    document: {
+      addEventListener() {},
+      cookie: "",
+      createElement() {
+        return new FakeElement();
+      },
+      createTextNode(text) {
+        const node = new FakeElement();
+        node.textContent = text;
+        return node;
+      },
+      querySelector(selector) {
+        return selector === "[data-dashboard-root]" ? root : null;
+      },
+      visibilityState: "hidden",
+    },
+    fetch(url, options = {}) {
+      fetchCalls.push({ options, url });
+      if (url === "/api/v1/relationship-scores/") {
+        return Promise.resolve(jsonResponse(200, scorePayload(currentScore)));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/attached",
+              requiredHeaders: { "Content-Type": "image/jpeg" },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/attached") {
+        return directPut.promise;
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/complete/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              id: uploadId,
+              kind: "image",
+              fileName: file.name,
+              contentType: file.type,
+              byteSize: file.size,
+            },
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/") {
+        currentScore = 3;
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: { delta: 3, resultingScore: 3 },
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url} ${options.method || "GET"}`);
+    },
+    URL,
+    window: {
+      location: {
+        assign() {},
+        origin: "https://friendly.test",
+        pathname: "/",
+        search: "",
+      },
+    },
+    woorisaiShowToast() {},
+  };
+
+  vm.runInNewContext(dashboardSource, sandbox, { filename: dashboardScriptPath });
+  await settleAsyncWork();
+
+  mediaInput.files = [file];
+  mediaInput.listeners.change();
+  await settleAsyncWork();
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/").length,
+    1,
+  );
+  assert.equal(
+    fetchCalls.filter(
+      (call) => call.url === "https://r2.example.test/pending/attached",
+    ).length,
+    1,
+  );
+
+  form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/score-changes/").length,
+    0,
+  );
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/").length,
+    1,
+  );
+
+  directPut.resolve({ ok: true, redirected: false });
+  await settleAsyncWork();
+
+  const scorePosts = fetchCalls.filter(
+    (call) => call.url === "/api/v1/score-changes/",
+  );
+  assert.equal(scorePosts.length, 1);
+  assert.deepEqual(JSON.parse(scorePosts[0].options.body), {
+    delta: 3,
+    reason: "사진과 함께",
+    mediaUploadIds: [uploadId],
+  });
+  assert.equal(
+    fetchCalls.filter(
+      (call) =>
+        call.url === `/api/v1/media-uploads/${uploadId}/complete/`,
+    ).length,
+    1,
+  );
+  assert.equal(
+    fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/").length,
+    1,
+  );
+  assert.equal(
+    fetchCalls.filter(
+      (call) => call.url === "https://r2.example.test/pending/attached",
+    ).length,
+    1,
+  );
+});
+
+test("a failed background score image upload keeps the selection and retries on submit", async () => {
+  const failedUpload = deferred();
+  const retryUpload = deferred();
+  const harness = createScoreMediaManagerHarness([
+    failedUpload.promise,
+    retryUpload.promise,
+  ]);
+  harness.select({ name: "retry.jpg", size: 512, type: "image/jpeg" });
+
+  failedUpload.reject(new Error("network unavailable"));
+  await settleAsyncWork();
+
+  assert.equal(harness.manager.hasSelection(), true);
+  assert.equal(harness.selection.hidden, false);
+  assert.equal(
+    harness.status.textContent,
+    "사진을 업로드하지 못했어요. 잠시 후 다시 시도해 주세요.",
+  );
+
+  const retriedSubmission = harness.manager.upload({
+    csrfToken: "rendered-csrf-token",
+    purpose: "scoreChange",
+  });
+  assert.equal(harness.uploadCalls.length, 2);
+  retryUpload.resolve("00000000-0000-4000-8000-000000000002");
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await retriedSubmission)),
+    ["00000000-0000-4000-8000-000000000002"],
+  );
+  assert.equal(harness.status.textContent, "사진 업로드를 마쳤어요.");
+});
+
+test("an expired session during background score image upload redirects immediately", async () => {
+  const failedUpload = deferred();
+  const harness = createScoreMediaManagerHarness([failedUpload.promise]);
+  harness.select({ name: "private.jpg", size: 512, type: "image/jpeg" });
+
+  failedUpload.reject({
+    asApiRequestError: true,
+    status: 401,
+    apiError: {
+      errorCode: "AUTHENTICATION_REQUIRED",
+      reason: "로그인이 필요합니다.",
+      details: [],
+    },
+  });
+  await settleAsyncWork();
+
+  assert.deepEqual(harness.assignedLocations, [
+    "/login/?next=%2F%3Ffrom%3Dupload",
+  ]);
+  assert.equal(harness.status.textContent, "사진을 올리고 있어요…");
+  assert.equal(harness.status.attributes["class:media-status--error"], false);
+});
+
+test("a replaced score image ignores the stale upload completion", async () => {
+  const firstUpload = deferred();
+  const secondUpload = deferred();
+  const harness = createScoreMediaManagerHarness([
+    firstUpload.promise,
+    secondUpload.promise,
+  ]);
+
+  harness.select({ name: "old.jpg", size: 512, type: "image/jpeg" });
+  harness.select({ name: "current.jpg", size: 1024, type: "image/jpeg" });
+  const submitUpload = harness.manager.upload({
+    csrfToken: "rendered-csrf-token",
+    purpose: "scoreChange",
+  });
+
+  assert.equal(harness.uploadCalls.length, 2);
+  assert.deepEqual(
+    harness.uploadCalls.map((call) => call.fileName),
+    ["old.jpg", "current.jpg"],
+  );
+  firstUpload.resolve("00000000-0000-4000-8000-000000000003");
+  await settleAsyncWork();
+  assert.equal(harness.status.textContent, "사진을 올리고 있어요…");
+
+  secondUpload.resolve("00000000-0000-4000-8000-000000000004");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(await submitUpload)),
+    ["00000000-0000-4000-8000-000000000004"],
+  );
+  assert.equal(harness.status.textContent, "사진 업로드를 마쳤어요.");
+  assert.deepEqual(harness.revokedPreviewUrls, ["blob:old.jpg"]);
+});
+
+test("a removed score image ignores its later upload completion", async () => {
+  const pendingUpload = deferred();
+  const harness = createScoreMediaManagerHarness([pendingUpload.promise]);
+  harness.select({ name: "removed.jpg", size: 512, type: "image/jpeg" });
+
+  const removeButton = harness.selection.children[0].children[2];
+  removeButton.listeners.click();
+  assert.equal(harness.manager.hasSelection(), false);
+  assert.equal(harness.status.textContent, "");
+  assert.equal(harness.selection.hidden, true);
+
+  pendingUpload.resolve("00000000-0000-4000-8000-000000000005");
+  await settleAsyncWork();
+
+  assert.equal(harness.manager.hasSelection(), false);
+  assert.equal(harness.status.textContent, "");
+  assert.deepEqual(
+    JSON.parse(
+      JSON.stringify(
+        await harness.manager.upload({
+          csrfToken: "rendered-csrf-token",
+          purpose: "scoreChange",
+        }),
+      ),
+    ),
+    [],
+  );
+  assert.deepEqual(harness.revokedPreviewUrls, ["blob:removed.jpg"]);
 });
 
 test("media completion rejects a malformed or mismatched success payload", () => {

@@ -592,6 +592,378 @@ test("a media-only comment uploads directly and renders the attachment safely", 
   assert.equal(harness.textarea.value, "");
 });
 
+test("video selection preuploads immediately and submit reuses the in-flight upload", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000011";
+  const file = {
+    name: "우리-영상.mp4",
+    size: 2048,
+    type: "video/mp4",
+  };
+  const attachment = {
+    id: uploadId,
+    kind: "video",
+    fileName: file.name,
+    contentType: file.type,
+    byteSize: file.size,
+    contentUrl: `/media/${uploadId}/content/`,
+  };
+  let resolvePut;
+  const harness = createThreadHarness({
+    withMedia: true,
+    fetchImplementation(url) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/video",
+              requiredHeaders: { "Content-Type": file.type },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/video") {
+        return new Promise((resolve) => {
+          resolvePut = () => resolve({ ok: true, redirected: false });
+        });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/complete/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              id: attachment.id,
+              kind: attachment.kind,
+              fileName: attachment.fileName,
+              contentType: attachment.contentType,
+              byteSize: attachment.byteSize,
+            },
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/31/comments/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: comment({
+              id: 95,
+              content: "영상 남겨요",
+              isMine: true,
+              attachments: [attachment],
+            }),
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.textarea.value = "영상 남겨요";
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+
+  const uploadCalls = () =>
+    harness.fetchCalls.filter((call) =>
+      [
+        "/api/v1/media-uploads/",
+        "https://r2.example.test/pending/video",
+        `/api/v1/media-uploads/${uploadId}/complete/`,
+      ].includes(call.url),
+    );
+  assert.deepEqual(
+    uploadCalls().map((call) => call.url),
+    [
+      "/api/v1/media-uploads/",
+      "https://r2.example.test/pending/video",
+    ],
+  );
+  assert.deepEqual(
+    JSON.parse(uploadCalls()[0].options.body),
+    {
+      purpose: "comment",
+      kind: "video",
+      fileName: file.name,
+      contentType: file.type,
+      byteSize: file.size,
+      scoreChangeId: 31,
+    },
+  );
+  assert.equal(harness.textarea.disabled, false);
+  assert.equal(harness.mediaInput.disabled, false);
+  assert.equal(harness.submitButton.disabled, false);
+  assert.match(harness.mediaStatus.textContent, /올리고 있어요/);
+
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/")
+      .length,
+    1,
+  );
+  assert.equal(
+    harness.fetchCalls.some(
+      (call) => call.url === "/api/v1/score-changes/31/comments/",
+    ),
+    false,
+  );
+  assert.equal(harness.submitLabel.textContent, "파일을 올리고 있어요…");
+
+  resolvePut();
+  await settleAsyncWork();
+
+  const commentCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/score-changes/31/comments/",
+  );
+  assert.deepEqual(JSON.parse(commentCall.options.body), {
+    content: "영상 남겨요",
+    mediaUploadIds: [uploadId],
+  });
+  assert.equal(
+    harness.fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/")
+      .length,
+    1,
+  );
+  assert.equal(harness.createdTags.includes("video"), true);
+});
+
+test("a failed background upload keeps its selection and retries on submit", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000021";
+  const file = { name: "다시-시도.jpg", size: 1024, type: "image/jpeg" };
+  const attachment = {
+    id: uploadId,
+    kind: "image",
+    fileName: file.name,
+    contentType: file.type,
+    byteSize: file.size,
+    contentUrl: `/media/${uploadId}/content/`,
+  };
+  let initiateCount = 0;
+  const harness = createThreadHarness({
+    withMedia: true,
+    fetchImplementation(url) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        initiateCount += 1;
+        if (initiateCount === 1) {
+          return Promise.resolve(
+            jsonResponse(503, {
+              resultType: "ERROR",
+              error: {
+                errorType: "SERVER",
+                errorCode: "MEDIA_UPLOADS_UNAVAILABLE",
+                reason: "파일 저장소를 잠시 사용할 수 없어요.",
+                details: [],
+              },
+              success: null,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/retry",
+              requiredHeaders: { "Content-Type": file.type },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/retry") {
+        return Promise.resolve({ ok: true, redirected: false });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/complete/`) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              id: attachment.id,
+              kind: attachment.kind,
+              fileName: attachment.fileName,
+              contentType: attachment.contentType,
+              byteSize: attachment.byteSize,
+            },
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/31/comments/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: comment({
+              id: 96,
+              content: "",
+              isMine: true,
+              attachments: [attachment],
+            }),
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+
+  assert.equal(initiateCount, 1);
+  assert.equal(harness.mediaSelection.hidden, false);
+  assert.equal(harness.mediaSelection.children.length, 1);
+  assert.match(harness.mediaStatus.textContent, /잠시 사용할 수 없어요/);
+
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  assert.equal(initiateCount, 2);
+  const commentCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/score-changes/31/comments/",
+  );
+  assert.deepEqual(JSON.parse(commentCall.options.body), {
+    content: "",
+    mediaUploadIds: [uploadId],
+  });
+  assert.equal(harness.commentList.children.length, 1);
+});
+
+test("concurrent image preuploads preserve selection order and ignore removed items", async () => {
+  const files = [
+    { name: "첫째.jpg", size: 101, type: "image/jpeg" },
+    { name: "둘째.png", size: 102, type: "image/png" },
+    { name: "셋째.webp", size: 103, type: "image/webp" },
+  ];
+  const uploadIds = files.map(
+    (_, index) => `00000000-0000-4000-8000-00000000003${index + 1}`,
+  );
+  const putResolvers = new Map();
+  const attachments = files.map((file, index) => ({
+    id: uploadIds[index],
+    kind: "image",
+    fileName: file.name,
+    contentType: file.type,
+    byteSize: file.size,
+    contentUrl: `/media/${uploadIds[index]}/content/`,
+  }));
+  const harness = createThreadHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        const body = JSON.parse(options.body);
+        const index = files.findIndex((file) => file.name === body.fileName);
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId: uploadIds[index],
+              uploadUrl: `https://r2.example.test/pending/${index}`,
+              requiredHeaders: { "Content-Type": files[index].type },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url.startsWith("https://r2.example.test/pending/")) {
+        const index = Number(url.at(-1));
+        return new Promise((resolve) => {
+          putResolvers.set(index, () => resolve({ ok: true, redirected: false }));
+        });
+      }
+      const completedIndex = uploadIds.findIndex((uploadId) =>
+        url.includes(uploadId),
+      );
+      if (completedIndex >= 0) {
+        const attachment = attachments[completedIndex];
+        return Promise.resolve(
+          jsonResponse(200, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              id: attachment.id,
+              kind: attachment.kind,
+              fileName: attachment.fileName,
+              contentType: attachment.contentType,
+              byteSize: attachment.byteSize,
+            },
+          }),
+        );
+      }
+      if (url === "/api/v1/score-changes/31/comments/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: comment({
+              id: 97,
+              content: "",
+              isMine: true,
+              attachments: [attachments[0], attachments[2]],
+            }),
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = files;
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/")
+      .length,
+    3,
+  );
+  assert.equal(putResolvers.size, 3);
+  const removedCard = harness.mediaSelection.children[1];
+  removedCard.children[2].listeners.click();
+  assert.equal(harness.mediaSelection.children.length, 2);
+
+  putResolvers.get(2)();
+  putResolvers.get(0)();
+  putResolvers.get(1)();
+  await settleAsyncWork();
+
+  harness.form.listeners.submit({ preventDefault() {} });
+  await settleAsyncWork();
+
+  const commentCall = harness.fetchCalls.find(
+    (call) => call.url === "/api/v1/score-changes/31/comments/",
+  );
+  assert.deepEqual(JSON.parse(commentCall.options.body), {
+    content: "",
+    mediaUploadIds: [uploadIds[0], uploadIds[2]],
+  });
+  assert.equal(
+    harness.fetchCalls.filter((call) => call.url === "/api/v1/media-uploads/")
+      .length,
+    3,
+  );
+});
+
 test("a score refresh started before submission cannot erase the created comment", async () => {
   let getCount = 0;
   let resolvePost;
