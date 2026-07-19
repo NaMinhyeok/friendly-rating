@@ -165,6 +165,49 @@ def test_registration_reactivates_and_reassigns_without_exposing_row_state(
     assert existing.is_active
 
 
+def test_registration_accepts_url_safe_fid_characters(participant_pair):
+    fid = f"c{'A' * 19}-_"
+    client, csrf_token = _participant_client(participant_pair.first)
+
+    response = _post_json(
+        client,
+        "push-device-register",
+        {"fid": fid},
+        csrf_token=csrf_token,
+    )
+
+    assert response.status_code == 200
+    assert PushDevice.objects.filter(
+        participant=participant_pair.first,
+        firebase_installation_id=fid,
+        is_active=True,
+    ).exists()
+
+
+def test_registration_keeps_only_the_five_most_recent_devices(participant_pair):
+    client, csrf_token = _participant_client(participant_pair.first)
+    fids = [f"c{'A' * 20}{index}" for index in range(6)]
+
+    for fid in fids:
+        response = _post_json(
+            client,
+            "push-device-register",
+            {"fid": fid},
+            csrf_token=csrf_token,
+        )
+        assert response.status_code == 200
+
+    active_devices = PushDevice.objects.filter(
+        participant=participant_pair.first,
+        is_active=True,
+    )
+    assert active_devices.count() == 5
+    assert not active_devices.filter(firebase_installation_id=fids[0]).exists()
+    assert set(
+        active_devices.values_list("firebase_installation_id", flat=True)
+    ) == set(fids[1:])
+
+
 @pytest.mark.parametrize("device_exists", (False, True))
 def test_unregister_is_idempotent_for_owned_device(participant_pair, device_exists):
     device = (
