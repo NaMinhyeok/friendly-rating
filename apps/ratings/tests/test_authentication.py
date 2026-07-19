@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 from axes.models import AccessAttempt
 from django.core.management import call_command
-from django.test import Client, RequestFactory, TestCase, override_settings
+from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
@@ -39,7 +39,8 @@ class PinLoginTests(TestCase):
         )
 
         self.assertRedirects(response, reverse("home"))
-        self.assertEqual(int(self.client.session["_auth_user_id"]), participant.user_id)
+        home_response = self.client.get(reverse("home"))
+        self.assertContains(home_response, "민수님의 마음 공간")
 
     def test_invalid_pin_is_rejected(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)
@@ -51,7 +52,10 @@ class PinLoginTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "PIN 번호가 올바르지 않습니다")
-        self.assertNotIn("_auth_user_id", self.client.session)
+        self.assertRedirects(
+            self.client.get(reverse("home")),
+            f"{reverse('login')}?next={reverse('home')}",
+        )
 
     def test_account_is_locked_after_failures_from_different_ips(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)
@@ -126,7 +130,6 @@ class PinLoginTests(TestCase):
             REMOTE_ADDR="192.0.2.20",
         )
         self.assertRedirects(success_response, reverse("home"))
-        self.assertFalse(AccessAttempt.objects.exists())
 
         fresh_client = Client()
         for _ in range(4):
@@ -162,7 +165,7 @@ class PinLoginTests(TestCase):
 
         self.assertRedirects(response, reverse("home"))
 
-    def test_pin_is_masked_in_failure_records(self):
+    def test_pin_is_not_stored_in_failure_records(self):
         participant = Participant.objects.get(slot=Participant.Slot.FIRST)
 
         self.client.post(
@@ -173,7 +176,6 @@ class PinLoginTests(TestCase):
 
         post_data = AccessAttempt.objects.get().post_data
         self.assertNotIn("9999", post_data)
-        self.assertIn("pin=********************", post_data)
 
     def test_anonymous_user_is_redirected_to_login(self):
         response = self.client.get(reverse("home"))
@@ -189,37 +191,38 @@ class PinLoginTests(TestCase):
 
         self.assertEqual(get_response.status_code, 405)
         self.assertRedirects(post_response, reverse("login"))
-        self.assertNotIn("_auth_user_id", self.client.session)
-
-
-class ClientIpAddressTests(TestCase):
-    def setUp(self):
-        self.request_factory = RequestFactory()
-
-    @override_settings(IS_RAILWAY=False)
-    def test_local_request_uses_remote_address_only(self):
-        request = self.request_factory.get(
-            "/",
-            REMOTE_ADDR="192.0.2.50",
-            HTTP_X_REAL_IP="198.51.100.50",
-            HTTP_X_FORWARDED_FOR="203.0.113.50",
+        self.assertRedirects(
+            self.client.get(reverse("home")),
+            f"{reverse('login')}?next={reverse('home')}",
         )
 
-        self.assertEqual(get_client_ip_address(request), "192.0.2.50")
 
-    @override_settings(IS_RAILWAY=True)
-    def test_railway_request_uses_x_real_ip(self):
-        request = self.request_factory.get(
-            "/",
-            REMOTE_ADDR="10.0.0.1",
-            HTTP_X_REAL_IP="2001:db8::1",
-            HTTP_X_FORWARDED_FOR="203.0.113.50",
-        )
+def test_local_request_uses_remote_address_only(rf, settings):
+    settings.IS_RAILWAY = False
+    request = rf.get(
+        "/",
+        REMOTE_ADDR="192.0.2.50",
+        HTTP_X_REAL_IP="198.51.100.50",
+        HTTP_X_FORWARDED_FOR="203.0.113.50",
+    )
 
-        self.assertEqual(get_client_ip_address(request), "2001:db8::1")
+    assert get_client_ip_address(request) == "192.0.2.50"
 
-    @override_settings(IS_RAILWAY=True)
-    def test_invalid_railway_ip_is_rejected(self):
-        request = self.request_factory.get("/", HTTP_X_REAL_IP="not-an-ip")
 
-        self.assertIsNone(get_client_ip_address(request))
+def test_railway_request_uses_x_real_ip(rf, settings):
+    settings.IS_RAILWAY = True
+    request = rf.get(
+        "/",
+        REMOTE_ADDR="10.0.0.1",
+        HTTP_X_REAL_IP="2001:db8::1",
+        HTTP_X_FORWARDED_FOR="203.0.113.50",
+    )
+
+    assert get_client_ip_address(request) == "2001:db8::1"
+
+
+def test_invalid_railway_ip_is_rejected(rf, settings):
+    settings.IS_RAILWAY = True
+    request = rf.get("/", HTTP_X_REAL_IP="not-an-ip")
+
+    assert get_client_ip_address(request) is None

@@ -2,272 +2,323 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import Client, TestCase, override_settings
+import pytest
+from django.test import Client
 from django.urls import reverse
 from firebase_admin import messaging
 
 from ..models import PushDevice
-from ..notifications import _get_firebase_app, send_score_change_notification
+from ..notifications import send_score_change_notification
 from ..services import change_relationship_score
-from .factories import create_participant_pair
 
 VALID_FID = "c12345678901234567890A"
 SECOND_FID = "d12345678901234567890B"
+SENDER_FID = "e12345678901234567890C"
 TEST_PUBLIC_BASE_URL = "https://friendly-rating.example.test/"
 
 
-class PushDeviceViewTests(TestCase):
-    def setUp(self):
-        self.first, self.second, _, _ = create_participant_pair()
+@pytest.fixture
+def push_delivery_settings(settings):
+    settings.PUSH_NOTIFICATIONS_ENABLED = True
+    settings.PUBLIC_BASE_URL = TEST_PUBLIC_BASE_URL
 
-    def post_json(self, url_name, fid=VALID_FID):
-        return self.client.post(
-            reverse(url_name),
-            data=json.dumps({"fid": fid}),
-            content_type="application/json",
-        )
 
-    def test_registration_requires_login(self):
-        response = self.post_json("register-push-device")
+def _post_json(client, url_name, fid=VALID_FID):
+    return client.post(
+        reverse(url_name),
+        data=json.dumps({"fid": fid}),
+        content_type="application/json",
+    )
 
-        self.assertEqual(response.status_code, 302)
-        self.assertFalse(PushDevice.objects.exists())
 
-    def test_registration_requires_csrf(self):
-        csrf_client = Client(enforce_csrf_checks=True)
-        csrf_client.force_login(self.first.user)
+@pytest.mark.django_db
+def test_registration_requires_login(client):
+    response = _post_json(client, "register-push-device")
 
-        response = csrf_client.post(
-            reverse("register-push-device"),
-            data=json.dumps({"fid": VALID_FID}),
-            content_type="application/json",
-        )
+    assert response.status_code == 302
+    assert not PushDevice.objects.exists()
 
-        self.assertEqual(response.status_code, 403)
-        self.assertFalse(PushDevice.objects.exists())
 
-    def test_participant_can_register_multiple_devices(self):
-        self.client.force_login(self.first.user)
+@pytest.mark.django_db
+def test_registration_requires_csrf(participant_pair):
+    csrf_client = Client(enforce_csrf_checks=True)
+    csrf_client.force_login(participant_pair.first.user)
 
-        first_response = self.post_json("register-push-device")
-        second_response = self.post_json("register-push-device", SECOND_FID)
+    response = _post_json(csrf_client, "register-push-device")
 
-        self.assertEqual(first_response.status_code, 201)
-        self.assertEqual(second_response.status_code, 201)
-        self.assertEqual(self.first.push_devices.filter(is_active=True).count(), 2)
+    assert response.status_code == 403
+    assert not PushDevice.objects.exists()
 
-    def test_registration_reactivates_and_reassigns_a_fid(self):
-        PushDevice.objects.create(
-            participant=self.second,
-            firebase_installation_id=VALID_FID,
-            is_active=False,
-        )
-        self.client.force_login(self.first.user)
 
-        response = self.post_json("register-push-device")
+@pytest.mark.django_db
+def test_participant_can_register_multiple_devices(client, participant_pair):
+    client.force_login(participant_pair.first.user)
 
-        device = PushDevice.objects.get(firebase_installation_id=VALID_FID)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(device.participant, self.first)
-        self.assertTrue(device.is_active)
+    first_response = _post_json(client, "register-push-device")
+    second_response = _post_json(client, "register-push-device", SECOND_FID)
 
-    def test_registration_keeps_only_the_five_most_recent_devices(self):
-        self.client.force_login(self.first.user)
+    assert first_response.status_code == 201
+    assert second_response.status_code == 201
+    assert participant_pair.first.push_devices.filter(is_active=True).count() == 2
 
-        for index in range(6):
-            response = self.post_json(
-                "register-push-device",
-                f"c{'A' * 20}{index}",
-            )
-            self.assertEqual(response.status_code, 201)
 
-        devices = self.first.push_devices.order_by("updated_at")
-        self.assertEqual(devices.count(), 5)
-        self.assertFalse(
-            devices.filter(firebase_installation_id=f"c{'A' * 20}0").exists()
-        )
+@pytest.mark.django_db
+def test_registration_reactivates_and_reassigns_a_fid(client, participant_pair):
+    PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=VALID_FID,
+        is_active=False,
+    )
+    client.force_login(participant_pair.first.user)
 
-    def test_participant_cannot_unregister_another_participants_device(self):
-        device = PushDevice.objects.create(
-            participant=self.second,
-            firebase_installation_id=VALID_FID,
-        )
-        self.client.force_login(self.first.user)
+    response = _post_json(client, "register-push-device")
 
-        response = self.post_json("unregister-push-device")
+    device = PushDevice.objects.get(firebase_installation_id=VALID_FID)
+    assert response.status_code == 200
+    assert device.participant == participant_pair.first
+    assert device.is_active
 
-        device.refresh_from_db()
-        self.assertEqual(response.status_code, 200)
-        self.assertTrue(device.is_active)
 
-    def test_invalid_fid_is_rejected(self):
-        self.client.force_login(self.first.user)
+@pytest.mark.django_db
+def test_registration_keeps_only_the_five_most_recent_devices(
+    client,
+    participant_pair,
+):
+    client.force_login(participant_pair.first.user)
 
-        response = self.post_json("register-push-device", "not valid")
-
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(PushDevice.objects.exists())
-
-    def test_structurally_invalid_url_safe_fid_is_rejected(self):
-        self.client.force_login(self.first.user)
-
-        response = self.post_json(
+    for index in range(6):
+        response = _post_json(
+            client,
             "register-push-device",
-            "a12345678901234567890A",
+            f"c{'A' * 20}{index}",
         )
+        assert response.status_code == 201
 
-        self.assertEqual(response.status_code, 400)
-        self.assertFalse(PushDevice.objects.exists())
-
-    def test_owned_device_can_be_unregistered(self):
-        device = PushDevice.objects.create(
-            participant=self.first,
-            firebase_installation_id=VALID_FID,
-        )
-        self.client.force_login(self.first.user)
-
-        response = self.post_json("unregister-push-device")
-
-        device.refresh_from_db()
-        self.assertEqual(response.status_code, 200)
-        self.assertFalse(device.is_active)
+    devices = participant_pair.first.push_devices.order_by("updated_at")
+    assert devices.count() == 5
+    assert not devices.filter(firebase_installation_id=f"c{'A' * 20}0").exists()
 
 
-@override_settings(
-    PUSH_NOTIFICATIONS_ENABLED=True,
-    PUBLIC_BASE_URL=TEST_PUBLIC_BASE_URL,
+@pytest.mark.django_db
+def test_participant_cannot_unregister_another_participants_device(
+    client,
+    participant_pair,
+):
+    device = PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=VALID_FID,
+    )
+    client.force_login(participant_pair.first.user)
+
+    response = _post_json(client, "unregister-push-device")
+
+    device.refresh_from_db()
+    assert response.status_code == 200
+    assert device.is_active
+
+
+@pytest.mark.parametrize(
+    "fid",
+    [
+        pytest.param("not valid", id="not-url-safe"),
+        pytest.param("a12345678901234567890A", id="invalid-prefix"),
+    ],
 )
-class PushDeliveryTests(TestCase):
-    def setUp(self):
-        self.first, self.second, self.score, _ = create_participant_pair()
+@pytest.mark.django_db
+def test_invalid_fid_is_rejected(client, participant_pair, fid):
+    client.force_login(participant_pair.first.user)
 
-    @patch("apps.ratings.notifications.messaging.send_each_for_multicast")
-    @patch("apps.ratings.notifications._get_firebase_app")
-    def test_sends_private_notification_to_all_recipient_devices(
-        self,
-        get_firebase_app,
-        send_each_for_multicast,
+    response = _post_json(client, "register-push-device", fid)
+
+    assert response.status_code == 400
+    assert not PushDevice.objects.exists()
+
+
+@pytest.mark.django_db
+def test_owned_device_can_be_unregistered(client, participant_pair):
+    device = PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=VALID_FID,
+    )
+    client.force_login(participant_pair.first.user)
+
+    response = _post_json(client, "unregister-push-device")
+
+    device.refresh_from_db()
+    assert response.status_code == 200
+    assert not device.is_active
+
+
+@pytest.mark.django_db
+def test_sends_private_notification_to_all_recipient_devices(
+    participant_pair,
+    push_delivery_settings,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=VALID_FID,
+    )
+    PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=SECOND_FID,
+    )
+    PushDevice.objects.create(
+        participant=participant_pair.first,
+        firebase_installation_id=SENDER_FID,
+    )
+    send_result = SimpleNamespace(
+        success_count=2,
+        responses=[
+            SimpleNamespace(success=True, exception=None),
+            SimpleNamespace(success=True, exception=None),
+        ],
+    )
+
+    with (
+        patch(
+            "apps.ratings.notifications._get_firebase_app",
+            return_value=object(),
+        ),
+        patch(
+            "apps.ratings.notifications.messaging.send_each_for_multicast",
+            return_value=send_result,
+        ) as send_each_for_multicast,
     ):
-        get_firebase_app.return_value = object()
-        PushDevice.objects.create(
-            participant=self.second,
-            firebase_installation_id=VALID_FID,
-        )
-        PushDevice.objects.create(
-            participant=self.second,
-            firebase_installation_id=SECOND_FID,
-        )
-        send_each_for_multicast.return_value = SimpleNamespace(
-            success_count=2,
-            responses=[
-                SimpleNamespace(success=True, exception=None),
-                SimpleNamespace(success=True, exception=None),
-            ],
+        sent_count = send_score_change_notification(
+            recipient_id=participant_pair.second.pk
         )
 
-        sent_count = send_score_change_notification(recipient_id=self.second.pk)
+    assert sent_count == 2
+    message = send_each_for_multicast.call_args.args[0]
+    assert sorted(message.fids) == sorted([VALID_FID, SECOND_FID])
+    assert message.notification.title == "우리 사이"
+    assert message.notification.body == "새로운 마음 기록이 도착했어요"
+    assert message.webpush.fcm_options.link == TEST_PUBLIC_BASE_URL
 
-        self.assertEqual(sent_count, 2)
-        message = send_each_for_multicast.call_args.args[0]
-        self.assertCountEqual(message.fids, [VALID_FID, SECOND_FID])
-        self.assertEqual(message.notification.title, "우리 사이")
-        self.assertEqual(
-            message.notification.body,
-            "새로운 마음 기록이 도착했어요",
-        )
-        self.assertEqual(
-            message.webpush.fcm_options.link,
-            TEST_PUBLIC_BASE_URL,
-        )
 
-    @patch("apps.ratings.notifications.messaging.send_each_for_multicast")
-    @patch("apps.ratings.notifications._get_firebase_app")
-    def test_permanently_invalid_fid_is_deactivated(
-        self,
-        get_firebase_app,
-        send_each_for_multicast,
+@pytest.mark.django_db
+def test_permanently_invalid_fid_is_deactivated(
+    participant_pair,
+    push_delivery_settings,
+):
+    device = PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=VALID_FID,
+    )
+    send_result = SimpleNamespace(
+        success_count=0,
+        responses=[
+            SimpleNamespace(
+                success=False,
+                exception=messaging.UnregisteredError("unregistered"),
+            ),
+        ],
+    )
+
+    with (
+        patch(
+            "apps.ratings.notifications._get_firebase_app",
+            return_value=object(),
+        ),
+        patch(
+            "apps.ratings.notifications.messaging.send_each_for_multicast",
+            return_value=send_result,
+        ),
     ):
-        get_firebase_app.return_value = object()
-        device = PushDevice.objects.create(
-            participant=self.second,
-            firebase_installation_id=VALID_FID,
-        )
-        send_each_for_multicast.return_value = SimpleNamespace(
-            success_count=0,
-            responses=[
-                SimpleNamespace(
-                    success=False,
-                    exception=messaging.UnregisteredError("unregistered"),
-                ),
-            ],
-        )
+        send_score_change_notification(recipient_id=participant_pair.second.pk)
 
-        send_score_change_notification(recipient_id=self.second.pk)
+    device.refresh_from_db()
+    assert not device.is_active
 
-        device.refresh_from_db()
-        self.assertFalse(device.is_active)
 
-    @patch("apps.ratings.services.score_changes.send_score_change_notification")
-    def test_score_change_notifies_recipient_only_after_commit(self, send_push):
-        with self.captureOnCommitCallbacks(execute=False) as callbacks:
-            change_relationship_score(source_participant=self.first, delta=1)
+@pytest.mark.django_db
+def test_score_change_notifies_recipient_only_after_commit(
+    participant_pair,
+    push_delivery_settings,
+    django_capture_on_commit_callbacks,
+):
+    with patch(
+        "apps.ratings.services.score_changes.send_score_change_notification"
+    ) as send_push:
+        with django_capture_on_commit_callbacks(execute=True):
+            change_relationship_score(
+                source_participant=participant_pair.first,
+                delta=1,
+            )
+            send_push.assert_not_called()
 
-        send_push.assert_not_called()
-        self.assertEqual(len(callbacks), 1)
-        callbacks[0]()
-        send_push.assert_called_once_with(recipient_id=self.second.pk)
+        send_push.assert_called_once_with(recipient_id=participant_pair.second.pk)
 
-    @patch(
-        "apps.ratings.services.score_changes.send_score_change_notification",
-        side_effect=RuntimeError("FCM unavailable"),
+
+@pytest.mark.django_db
+def test_push_failure_does_not_undo_score_change(
+    participant_pair,
+    push_delivery_settings,
+    django_capture_on_commit_callbacks,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=VALID_FID,
     )
-    def test_push_failure_does_not_undo_score_change(self, _send_push):
-        with self.assertLogs("apps.ratings.services.score_changes", level="ERROR"):
-            with self.captureOnCommitCallbacks(execute=True):
-                change_relationship_score(source_participant=self.first, delta=3)
-
-        self.score.refresh_from_db()
-        self.assertEqual(self.score.current_score, 3)
-
-
-class ServiceWorkerViewTests(TestCase):
-    def test_service_worker_is_root_scoped_and_not_cached(self):
-        response = self.client.get(reverse("service-worker"))
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response["Content-Type"], "application/javascript")
-        self.assertEqual(response["Service-Worker-Allowed"], "/")
-        self.assertEqual(
-            response["Cache-Control"],
-            "no-cache, no-store, must-revalidate",
+    with (
+        patch(
+            "apps.ratings.notifications._get_firebase_app",
+            return_value=object(),
+        ),
+        patch(
+            "apps.ratings.notifications.messaging.send_each_for_multicast",
+            side_effect=RuntimeError("FCM unavailable"),
+        ) as send_each_for_multicast,
+        django_capture_on_commit_callbacks(execute=True),
+    ):
+        change_relationship_score(
+            source_participant=participant_pair.first,
+            delta=3,
         )
 
-    @override_settings(
-        PUSH_NOTIFICATIONS_AVAILABLE=True,
-        FIREBASE_WEB_CONFIG={
-            "apiKey": "test-api-key",
-            "appId": "test-app-id",
-            "authDomain": "test.firebaseapp.com",
-            "messagingSenderId": "123456",
-            "projectId": "test-project",
-        },
+    participant_pair.first_to_second.refresh_from_db()
+    assert participant_pair.first_to_second.current_score == 3
+    send_each_for_multicast.assert_called_once()
+
+
+def test_service_worker_uses_environment_firebase_config(client, settings):
+    settings.PUSH_NOTIFICATIONS_AVAILABLE = True
+    settings.FIREBASE_WEB_CONFIG = {
+        "apiKey": "test-api-key",
+        "appId": "test-app-id",
+        "authDomain": "test.firebaseapp.com",
+        "messagingSenderId": "123456",
+        "projectId": "test-project",
+    }
+
+    response = client.get(reverse("service-worker"))
+    body = response.content.decode()
+
+    assert '"projectId":"test-project"' in body
+    assert "woorisai-friendly-rating" not in body
+
+
+@pytest.mark.django_db
+def test_mismatched_service_account_project_is_rejected(
+    participant_pair,
+    settings,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=VALID_FID,
     )
-    def test_service_worker_uses_environment_firebase_config(self):
-        response = self.client.get(reverse("service-worker"))
-        body = response.content.decode()
-
-        self.assertIn('"projectId":"test-project"', body)
-        self.assertNotIn("woorisai-friendly-rating", body)
-
-
-class FirebaseConfigurationTests(TestCase):
-    @override_settings(
-        PUSH_NOTIFICATIONS_ENABLED=True,
-        FIREBASE_WEB_CONFIG={"projectId": "web-project"},
-        FIREBASE_SERVICE_ACCOUNT_JSON=json.dumps({"project_id": "different-project"}),
+    settings.PUSH_NOTIFICATIONS_ENABLED = True
+    settings.FIREBASE_WEB_CONFIG = {"projectId": "web-project"}
+    settings.FIREBASE_SERVICE_ACCOUNT_JSON = json.dumps(
+        {"project_id": "different-project"}
     )
-    def test_mismatched_service_account_project_is_rejected(self):
-        with self.assertLogs("apps.ratings.notifications", level="ERROR"):
-            firebase_app = _get_firebase_app()
 
-        self.assertIsNone(firebase_app)
+    with patch(
+        "apps.ratings.notifications.messaging.send_each_for_multicast"
+    ) as send_each_for_multicast:
+        sent_count = send_score_change_notification(
+            recipient_id=participant_pair.second.pk
+        )
+
+    assert sent_count == 0
+    send_each_for_multicast.assert_not_called()

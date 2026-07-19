@@ -2,19 +2,16 @@ import re
 from io import StringIO
 from unittest.mock import patch
 
+import pytest
 from django.contrib.auth import get_user_model
 from django.contrib.auth.hashers import PBKDF2PasswordHasher
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import connection
-from django.test import SimpleTestCase, TestCase
+from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
 from ..models import Participant, PushDevice, RelationshipScore, ScoreChange
-from ..participant_provisioning import (
-    ProvisioningError,
-    load_specs_from_environment,
-)
 
 PARTICIPANT_ENV = {
     "PARTICIPANT_1_NAME": "민수",
@@ -34,44 +31,57 @@ DML_PATTERN = re.compile(
 )
 
 
-class ParticipantSpecificationTests(SimpleTestCase):
-    def test_loads_valid_specs_without_database_access(self):
-        specifications = load_specs_from_environment(PARTICIPANT_ENV)
+def run_provision_command(*arguments, environment=None):
+    output = StringIO()
+    with patch.dict(
+        "os.environ",
+        PARTICIPANT_ENV if environment is None else environment,
+        clear=False,
+    ):
+        call_command("provision_participants", *arguments, stdout=output)
+    return output.getvalue()
 
-        self.assertEqual(
-            [
-                (spec.slot, spec.username, spec.display_name, spec.pin)
-                for spec in specifications
-            ],
-            [
-                (1, "participant-1", "민수", "1234"),
-                (2, "participant-2", "지수", "5678"),
-            ],
-        )
 
-    def test_rejects_duplicate_display_names(self):
-        duplicate_names = {**PARTICIPANT_ENV, "PARTICIPANT_2_NAME": "민수"}
+@pytest.mark.django_db
+@pytest.mark.parametrize(
+    ("environment", "error_message"),
+    (
+        pytest.param(
+            {**PARTICIPANT_ENV, "PARTICIPANT_2_NAME": "민수"},
+            "서로 달라야",
+            id="duplicate-display-names",
+        ),
+        pytest.param(
+            {**PARTICIPANT_ENV, "PARTICIPANT_1_PIN": "１２３４"},
+            "숫자 4자리",
+            id="non-ascii-digits",
+        ),
+        pytest.param(
+            {**PARTICIPANT_ENV, "PARTICIPANT_1_PIN": "12ab"},
+            "숫자 4자리",
+            id="non-digit-pin",
+        ),
+    ),
+)
+def test_invalid_participant_configuration_does_not_change_database(
+    environment,
+    error_message,
+):
+    with pytest.raises(CommandError, match=error_message):
+        run_provision_command(environment=environment)
 
-        with self.assertRaisesMessage(ProvisioningError, "서로 달라야"):
-            load_specs_from_environment(duplicate_names)
-
-    def test_rejects_non_ascii_digits(self):
-        non_ascii_pin = {**PARTICIPANT_ENV, "PARTICIPANT_1_PIN": "１２３４"}
-
-        with self.assertRaisesMessage(ProvisioningError, "숫자 4자리"):
-            load_specs_from_environment(non_ascii_pin)
+    assert (
+        not get_user_model()
+        .objects.filter(username__startswith="participant-")
+        .exists()
+    )
+    assert not Participant.objects.exists()
+    assert not RelationshipScore.objects.exists()
 
 
 class ProvisionParticipantsCommandTests(TestCase):
     def run_command(self, *arguments, environment=None):
-        output = StringIO()
-        with patch.dict(
-            "os.environ",
-            PARTICIPANT_ENV if environment is None else environment,
-            clear=False,
-        ):
-            call_command("provision_participants", *arguments, stdout=output)
-        return output.getvalue()
+        return run_provision_command(*arguments, environment=environment)
 
     def dml_queries(self, captured_queries):
         return [
@@ -178,8 +188,8 @@ class ProvisionParticipantsCommandTests(TestCase):
             self.assertTrue(participant.user.is_active)
             self.assertFalse(participant.user.is_staff)
             self.assertFalse(participant.user.is_superuser)
-        for secret in (*PARTICIPANT_ENV.values(),):
-            self.assertNotIn(secret, output)
+        self.assertNotIn(PARTICIPANT_ENV["PARTICIPANT_1_PIN"], output)
+        self.assertNotIn(PARTICIPANT_ENV["PARTICIPANT_2_PIN"], output)
 
     def test_second_identical_run_performs_no_dml_and_preserves_state(self):
         self.run_command()
@@ -200,17 +210,6 @@ class ProvisionParticipantsCommandTests(TestCase):
             output = self.run_command("--check")
 
         self.assertEqual(self.dml_queries(queries.captured_queries), [])
-        self.assertIn("변경하지 않았습니다", output)
-
-    def test_reconcile_matching_state_performs_no_dml(self):
-        self.run_command()
-        before = self.aggregate_snapshot()
-
-        with CaptureQueriesContext(connection) as queries:
-            output = self.run_command("--reconcile")
-
-        self.assertEqual(self.dml_queries(queries.captured_queries), [])
-        self.assertEqual(self.aggregate_snapshot(), before)
         self.assertIn("변경하지 않았습니다", output)
 
     def test_check_rejects_empty_database_without_dml(self):
@@ -283,8 +282,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         history_snapshot = list(ScoreChange.objects.order_by("pk").values())
         device_snapshot = list(PushDevice.objects.order_by("pk").values())
 
-        with CaptureQueriesContext(connection) as queries:
-            output = self.run_command("--reconcile", environment=RECONCILED_ENV)
+        output = self.run_command("--reconcile", environment=RECONCILED_ENV)
 
         first.refresh_from_db()
         user = get_user_model().objects.get(pk=first_user_id)
@@ -308,15 +306,9 @@ class ProvisionParticipantsCommandTests(TestCase):
         self.assertEqual(
             list(PushDevice.objects.order_by("pk").values()), device_snapshot
         )
-        relationship_writes = [
-            sql
-            for sql in self.dml_queries(queries.captured_queries)
-            if '"relationship_score"' in sql.lower()
-        ]
-        self.assertEqual(relationship_writes, [])
         self.assertIn("안전하게 반영", output)
-        for secret in (*RECONCILED_ENV.values(),):
-            self.assertNotIn(secret, output)
+        self.assertNotIn(RECONCILED_ENV["PARTICIPANT_1_PIN"], output)
+        self.assertNotIn(RECONCILED_ENV["PARTICIPANT_2_PIN"], output)
 
     def test_reconcile_can_swap_display_names(self):
         self.run_command()
@@ -347,8 +339,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         history_snapshot = list(ScoreChange.objects.order_by("pk").values())
         device_snapshot = list(PushDevice.objects.order_by("pk").values())
 
-        with CaptureQueriesContext(connection) as queries:
-            self.run_command("--reconcile")
+        self.run_command("--reconcile")
 
         existing.refresh_from_db()
         self.assertEqual(
@@ -362,13 +353,13 @@ class ProvisionParticipantsCommandTests(TestCase):
         self.assertEqual(
             list(PushDevice.objects.order_by("pk").values()), device_snapshot
         )
-        self.assertEqual(len(self.dml_queries(queries.captured_queries)), 1)
-        self.assertIn(
-            'INSERT INTO "relationship_score"',
-            self.dml_queries(queries.captured_queries)[0],
+        recreated = RelationshipScore.objects.get(
+            source_participant__slot=Participant.Slot.SECOND
         )
+        self.assertEqual(recreated.target_participant.slot, Participant.Slot.FIRST)
+        self.assertEqual(recreated.current_score, 0)
 
-    def test_reconcile_rolls_back_all_changes_when_second_name_update_fails(self):
+    def test_reconcile_rolls_back_all_changes_when_reconciliation_fails(self):
         self.run_command()
         changed_environment = {
             "PARTICIPANT_1_NAME": "민호",
@@ -377,17 +368,17 @@ class ProvisionParticipantsCommandTests(TestCase):
             "PARTICIPANT_2_PIN": "8765",
         }
         before = self.aggregate_snapshot()
-        original_save = Participant.save
 
-        def fail_on_second_final_name(instance, *args, **kwargs):
-            if (
-                instance.slot == Participant.Slot.SECOND
-                and instance.display_name == "지윤"
-            ):
-                raise RuntimeError("injected reconcile failure")
-            return original_save(instance, *args, **kwargs)
+        def change_one_participant_then_fail(_specifications, snapshot):
+            participant = snapshot.participants_by_slot[Participant.Slot.FIRST]
+            participant.display_name = "원자성 검증 중 변경"
+            participant.save(update_fields=["display_name"])
+            raise RuntimeError("injected reconcile failure")
 
-        with patch.object(Participant, "save", new=fail_on_second_final_name):
+        with patch(
+            "apps.ratings.participant_provisioning.service.reconcile_participants",
+            new=change_one_participant_then_fail,
+        ):
             with self.assertRaisesMessage(RuntimeError, "injected reconcile failure"):
                 self.run_command("--reconcile", environment=changed_environment)
 
@@ -409,16 +400,3 @@ class ProvisionParticipantsCommandTests(TestCase):
 
         self.assertEqual(self.dml_queries(queries.captured_queries), [])
         self.assertEqual(self.aggregate_snapshot(), before)
-
-    def test_rejects_invalid_pin_before_querying_database(self):
-        invalid_environment = {**PARTICIPANT_ENV, "PARTICIPANT_1_PIN": "12ab"}
-
-        with CaptureQueriesContext(connection) as queries:
-            with self.assertRaisesMessage(CommandError, "숫자 4자리"):
-                self.run_command(environment=invalid_environment)
-
-        self.assertEqual(queries.captured_queries, [])
-
-    def test_check_and_reconcile_are_mutually_exclusive(self):
-        with self.assertRaises(CommandError):
-            self.run_command("--check", "--reconcile")

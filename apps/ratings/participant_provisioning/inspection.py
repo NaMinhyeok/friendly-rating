@@ -25,7 +25,6 @@ def inspect_snapshot(specifications, snapshot):
             ProvisioningState.UNSAFE_DRIFT,
             (
                 DriftIssue(
-                    code="participant_graph_incomplete",
                     reconcilable=False,
                     message="참가자 소유 관계가 불완전합니다.",
                 ),
@@ -44,7 +43,6 @@ def inspect_snapshot(specifications, snapshot):
             if canonical_user is not None and canonical_user.pk != user.pk:
                 issues.append(
                     DriftIssue(
-                        code=f"slot_{spec.slot}_username_conflict",
                         reconcilable=False,
                         message=(
                             f"슬롯 {spec.slot}의 예약 사용자 이름이 다른 사용자에게 "
@@ -55,7 +53,6 @@ def inspect_snapshot(specifications, snapshot):
             else:
                 issues.append(
                     DriftIssue(
-                        code=f"slot_{spec.slot}_username",
                         reconcilable=True,
                         message=f"슬롯 {spec.slot}의 사용자 이름이 다릅니다.",
                     )
@@ -63,7 +60,6 @@ def inspect_snapshot(specifications, snapshot):
         if user.first_name != spec.display_name:
             issues.append(
                 DriftIssue(
-                    code=f"slot_{spec.slot}_first_name",
                     reconcilable=True,
                     message=f"슬롯 {spec.slot}의 로그인 이름이 다릅니다.",
                 )
@@ -71,7 +67,6 @@ def inspect_snapshot(specifications, snapshot):
         if not user.is_active or user.is_staff or user.is_superuser:
             issues.append(
                 DriftIssue(
-                    code=f"slot_{spec.slot}_permissions",
                     reconcilable=True,
                     message=f"슬롯 {spec.slot}의 사용자 권한 설정이 다릅니다.",
                 )
@@ -80,7 +75,6 @@ def inspect_snapshot(specifications, snapshot):
         if password_status == PasswordStatus.MISMATCH:
             issues.append(
                 DriftIssue(
-                    code=f"slot_{spec.slot}_pin",
                     reconcilable=True,
                     message=f"슬롯 {spec.slot}의 PIN 설정이 다릅니다.",
                 )
@@ -88,7 +82,6 @@ def inspect_snapshot(specifications, snapshot):
         elif password_status == PasswordStatus.OUTDATED_HASH:
             issues.append(
                 DriftIssue(
-                    code=f"slot_{spec.slot}_pin_hash",
                     reconcilable=True,
                     message=f"슬롯 {spec.slot}의 PIN 해시 정책이 오래되었습니다.",
                 )
@@ -96,7 +89,6 @@ def inspect_snapshot(specifications, snapshot):
         if participant.display_name != spec.display_name:
             issues.append(
                 DriftIssue(
-                    code=f"slot_{spec.slot}_display_name",
                     reconcilable=True,
                     message=f"슬롯 {spec.slot}의 표시 이름이 다릅니다.",
                 )
@@ -116,7 +108,6 @@ def inspect_snapshot(specifications, snapshot):
         if score is None:
             issues.append(
                 DriftIssue(
-                    code=f"slot_{source_slot}_relationship_missing",
                     reconcilable=True,
                     message=f"슬롯 {source_slot}의 관계 점수가 없습니다.",
                 )
@@ -124,7 +115,6 @@ def inspect_snapshot(specifications, snapshot):
         elif score.target_participant_id != target_id:
             issues.append(
                 DriftIssue(
-                    code=f"slot_{source_slot}_relationship_target",
                     reconcilable=False,
                     message=f"슬롯 {source_slot}의 관계 방향이 다릅니다.",
                 )
@@ -133,7 +123,6 @@ def inspect_snapshot(specifications, snapshot):
     if snapshot.score_count > len(expected_target_by_source):
         issues.append(
             DriftIssue(
-                code="unexpected_relationships",
                 reconcilable=False,
                 message="예상하지 않은 관계 점수가 있습니다.",
             )

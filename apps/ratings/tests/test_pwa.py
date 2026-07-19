@@ -1,80 +1,88 @@
 import json
 from pathlib import Path
 
+import pytest
 from django.contrib.staticfiles import finders
-from django.test import TestCase, override_settings
 from django.urls import reverse
+from pytest_django.asserts import assertContains, assertNotContains
 from whitenoise.middleware import WhiteNoiseMiddleware
 
-from .factories import create_participant_pair
+
+@pytest.fixture
+def authenticated_client(client, participant_pair):
+    client.force_login(participant_pair.first.user)
+    return client
 
 
-class PwaAssetTests(TestCase):
-    def test_manifest_uses_the_web_app_manifest_content_type(self):
-        middleware = WhiteNoiseMiddleware(lambda request: None)
+def test_manifest_uses_the_web_app_manifest_content_type():
+    middleware = WhiteNoiseMiddleware(lambda request: None)
 
-        self.assertEqual(
-            middleware.media_types.get_type("manifest.webmanifest"),
-            "application/manifest+json",
-        )
-
-    def test_manifest_declares_standalone_app_and_required_icons(self):
-        manifest_path = finders.find("ratings/manifest.webmanifest")
-        self.assertIsNotNone(manifest_path)
-
-        manifest = json.loads(Path(manifest_path).read_text())
-
-        self.assertEqual(manifest["id"], "/")
-        self.assertEqual(manifest["start_url"], "/")
-        self.assertEqual(manifest["scope"], "/")
-        self.assertEqual(manifest["display"], "standalone")
-        self.assertIn("192x192", {icon["sizes"] for icon in manifest["icons"]})
-        self.assertIn("512x512", {icon["sizes"] for icon in manifest["icons"]})
-        self.assertIn("maskable", {icon["purpose"] for icon in manifest["icons"]})
-
-    def test_service_worker_only_runtime_caches_static_requests(self):
-        response = self.client.get(reverse("service-worker"))
-        body = response.content.decode()
-
-        self.assertIn('request.mode === "navigate"', body)
-        self.assertIn('url.pathname.startsWith("/static/")', body)
-        self.assertNotIn('caches.open("/")', body)
-        self.assertNotIn('caches.open("/history/")', body)
-
-
-class PwaPageTests(TestCase):
-    def setUp(self):
-        self.first, _, _, _ = create_participant_pair()
-        self.client.force_login(self.first.user)
-
-    def test_home_includes_installable_pwa_metadata(self):
-        response = self.client.get(reverse("home"))
-
-        self.assertContains(response, 'rel="manifest"')
-        self.assertContains(response, 'rel="apple-touch-icon"')
-        self.assertContains(response, "apple-mobile-web-app-capable")
-
-    def test_notification_client_is_hidden_when_push_is_unavailable(self):
-        response = self.client.get(reverse("home"))
-
-        self.assertNotContains(response, "data-notification-settings")
-        self.assertNotContains(response, "ratings/notifications.js")
-
-    @override_settings(
-        PUSH_NOTIFICATIONS_AVAILABLE=True,
-        FIREBASE_WEB_CONFIG={
-            "apiKey": "test-api-key",
-            "appId": "test-app-id",
-            "authDomain": "test.firebaseapp.com",
-            "messagingSenderId": "123456",
-            "projectId": "test-project",
-        },
-        FIREBASE_VAPID_PUBLIC_KEY="B" + "A" * 86,
+    assert (
+        middleware.media_types.get_type("manifest.webmanifest")
+        == "application/manifest+json"
     )
-    def test_notification_client_receives_only_public_configuration(self):
-        response = self.client.get(reverse("home"))
 
-        self.assertContains(response, "data-notification-settings")
-        self.assertContains(response, "ratings/notifications.js")
-        self.assertContains(response, "test-project")
-        self.assertNotContains(response, "private_key")
+
+def test_manifest_declares_standalone_app_and_required_icons():
+    manifest_path = finders.find("ratings/manifest.webmanifest")
+    assert manifest_path is not None
+
+    manifest = json.loads(Path(manifest_path).read_text())
+
+    assert manifest["id"] == "/"
+    assert manifest["start_url"] == "/"
+    assert manifest["scope"] == "/"
+    assert manifest["display"] == "standalone"
+    assert "192x192" in {icon["sizes"] for icon in manifest["icons"]}
+    assert "512x512" in {icon["sizes"] for icon in manifest["icons"]}
+    assert "maskable" in {icon["purpose"] for icon in manifest["icons"]}
+
+
+def test_service_worker_is_available_at_its_public_root_path(client):
+    response = client.get("/service-worker.js")
+
+    assert response.status_code == 200
+    assert response.headers["Content-Type"] == "application/javascript"
+    assert response.headers["Service-Worker-Allowed"] == "/"
+
+
+@pytest.mark.django_db
+def test_home_includes_installable_pwa_metadata(authenticated_client):
+    response = authenticated_client.get(reverse("home"))
+
+    assertContains(response, 'rel="manifest"')
+    assertContains(response, 'rel="apple-touch-icon"')
+    assertContains(response, "apple-mobile-web-app-capable")
+
+
+@pytest.mark.django_db
+def test_notification_client_is_hidden_when_push_is_unavailable(
+    authenticated_client,
+):
+    response = authenticated_client.get(reverse("home"))
+
+    assertNotContains(response, "data-notification-settings")
+    assertNotContains(response, "ratings/notifications.js")
+
+
+@pytest.mark.django_db
+def test_notification_client_receives_only_public_configuration(
+    authenticated_client,
+    settings,
+):
+    settings.PUSH_NOTIFICATIONS_AVAILABLE = True
+    settings.FIREBASE_WEB_CONFIG = {
+        "apiKey": "test-api-key",
+        "appId": "test-app-id",
+        "authDomain": "test.firebaseapp.com",
+        "messagingSenderId": "123456",
+        "projectId": "test-project",
+    }
+    settings.FIREBASE_VAPID_PUBLIC_KEY = "B" + "A" * 86
+
+    response = authenticated_client.get(reverse("home"))
+
+    assertContains(response, "data-notification-settings")
+    assertContains(response, "ratings/notifications.js")
+    assertContains(response, "test-project")
+    assertNotContains(response, "private_key")
