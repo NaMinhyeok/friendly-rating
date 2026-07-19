@@ -19,6 +19,7 @@ class Participant(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        db_table = "participant"
         ordering = ("slot",)
         constraints = [
             models.CheckConstraint(
@@ -46,6 +47,7 @@ class RelationshipScore(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "relationship_score"
         constraints = [
             models.CheckConstraint(
                 condition=Q(current_score__gte=0) & Q(current_score__lte=100),
@@ -77,6 +79,7 @@ class PushDevice(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
+        db_table = "push_device"
         ordering = ("participant__slot", "-updated_at")
 
     def __str__(self):
@@ -111,6 +114,7 @@ class ScoreChange(models.Model):
     objects = ImmutableScoreChangeQuerySet.as_manager()
 
     class Meta:
+        db_table = "score_change"
         ordering = ("-created_at", "-pk")
         constraints = [
             models.CheckConstraint(
