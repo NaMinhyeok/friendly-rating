@@ -1,67 +1,53 @@
-import os
-import re
-
-from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
 
-from ratings.models import Participant, RelationshipScore
+from ratings.participant_provisioning import (
+    ProvisioningError,
+    ProvisioningMode,
+    ProvisioningOutcome,
+    load_specs_from_environment,
+    provision_participants,
+)
 
 
 class Command(BaseCommand):
-    help = "환경 변수에서 두 참가자와 양방향 친밀도 점수를 생성합니다."
+    help = "환경 변수에 맞춰 두 참가자와 양방향 친밀도 점수를 설정합니다."
 
-    @transaction.atomic
+    def add_arguments(self, parser):
+        mode_group = parser.add_mutually_exclusive_group()
+        mode_group.add_argument(
+            "--check",
+            action="store_true",
+            help="현재 설정을 변경하지 않고 환경 변수와 일치하는지 확인합니다.",
+        )
+        mode_group.add_argument(
+            "--reconcile",
+            action="store_true",
+            help="안전하게 복구 가능한 설정 차이를 명시적으로 반영합니다.",
+        )
+
     def handle(self, *args, **options):
-        specifications = []
+        if options["check"] and options["reconcile"]:
+            raise CommandError("--check와 --reconcile은 함께 사용할 수 없습니다.")
+        if options["check"]:
+            mode = ProvisioningMode.CHECK
+        elif options["reconcile"]:
+            mode = ProvisioningMode.RECONCILE
+        else:
+            mode = ProvisioningMode.DEFAULT
 
-        for slot in (Participant.Slot.FIRST, Participant.Slot.SECOND):
-            name = os.getenv(f"PARTICIPANT_{slot}_NAME", "").strip()
-            pin = os.getenv(f"PARTICIPANT_{slot}_PIN", "")
-            if not name:
-                raise CommandError(f"PARTICIPANT_{slot}_NAME 환경 변수가 필요합니다.")
-            if len(name) > 30:
-                raise CommandError("참가자 이름은 30자 이하여야 합니다.")
-            if not re.fullmatch(r"\d{4}", pin):
-                raise CommandError(f"PARTICIPANT_{slot}_PIN은 숫자 4자리여야 합니다.")
-            specifications.append((slot, name, pin))
+        try:
+            specifications = load_specs_from_environment()
+            result = provision_participants(specifications, mode=mode)
+        except ProvisioningError as error:
+            raise CommandError(str(error)) from error
 
-        if specifications[0][1] == specifications[1][1]:
-            raise CommandError("두 참가자의 이름은 서로 달라야 합니다.")
-
-        user_model = get_user_model()
-        participants = []
-        for slot, name, pin in specifications:
-            user, _ = user_model.objects.get_or_create(username=f"participant-{slot}")
-            user.first_name = name
-            user.is_active = True
-            user.is_staff = False
-            user.is_superuser = False
-            if not user.check_password(pin):
-                user.set_password(pin)
-            user.save()
-
-            participant, _ = Participant.objects.update_or_create(
-                slot=slot,
-                defaults={
-                    "user": user,
-                    "display_name": name,
-                },
-            )
-            participants.append(participant)
-
-        first, second = participants
-        RelationshipScore.objects.update_or_create(
-            source_participant=first,
-            defaults={"target_participant": second},
-        )
-        RelationshipScore.objects.update_or_create(
-            source_participant=second,
-            defaults={"target_participant": first},
-        )
-
-        self.stdout.write(
-            self.style.SUCCESS(
-                f"참가자 {first.display_name}, {second.display_name} 설정을 완료했습니다."
-            )
-        )
+        messages = {
+            ProvisioningOutcome.BOOTSTRAPPED: "참가자 최초 설정을 완료했습니다.",
+            ProvisioningOutcome.UNCHANGED: (
+                "참가자 설정이 일치합니다. 변경하지 않았습니다."
+            ),
+            ProvisioningOutcome.RECONCILED: (
+                "참가자 설정 차이를 안전하게 반영했습니다."
+            ),
+        }
+        self.stdout.write(self.style.SUCCESS(messages[result.outcome]))

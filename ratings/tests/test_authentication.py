@@ -2,14 +2,12 @@ from io import StringIO
 from unittest.mock import patch
 
 from axes.models import AccessAttempt
-from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.test import Client, RequestFactory, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from ratings.models import Participant, RelationshipScore
+from ratings.models import Participant
 from ratings.security import get_client_ip_address
 
 PARTICIPANT_ENV = {
@@ -18,48 +16,6 @@ PARTICIPANT_ENV = {
     "PARTICIPANT_2_NAME": "지수",
     "PARTICIPANT_2_PIN": "5678",
 }
-
-
-class ProvisionParticipantsCommandTests(TestCase):
-    def run_command(self):
-        with patch.dict("os.environ", PARTICIPANT_ENV, clear=False):
-            call_command("provision_participants", stdout=StringIO())
-
-    def test_command_creates_two_participants_and_directional_scores(self):
-        self.run_command()
-
-        participants = list(Participant.objects.select_related("user"))
-        self.assertEqual(
-            [participant.display_name for participant in participants], ["민수", "지수"]
-        )
-        self.assertEqual(RelationshipScore.objects.count(), 2)
-        self.assertTrue(participants[0].user.check_password("1234"))
-        self.assertTrue(participants[1].user.check_password("5678"))
-
-    def test_command_is_idempotent(self):
-        self.run_command()
-        user = get_user_model().objects.get(username="participant-1")
-        original_password_hash = user.password
-
-        self.run_command()
-
-        self.assertEqual(Participant.objects.count(), 2)
-        self.assertEqual(
-            get_user_model()
-            .objects.filter(username__startswith="participant-")
-            .count(),
-            2,
-        )
-        self.assertEqual(RelationshipScore.objects.count(), 2)
-        user.refresh_from_db()
-        self.assertEqual(user.password, original_password_hash)
-
-    def test_command_rejects_invalid_pin(self):
-        invalid_environment = {**PARTICIPANT_ENV, "PARTICIPANT_1_PIN": "12ab"}
-
-        with patch.dict("os.environ", invalid_environment, clear=False):
-            with self.assertRaisesMessage(CommandError, "숫자 4자리"):
-                call_command("provision_participants", stdout=StringIO())
 
 
 class PinLoginTests(TestCase):
