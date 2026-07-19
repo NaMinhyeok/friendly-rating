@@ -74,15 +74,17 @@ def _claim_expired_media_cleanup(
         attachment.status = MediaAttachment.Status.DELETING
         attachment.save(update_fields=("status",))
 
-    object_keys = [attachment.object_key]
+    # Completion only deletes the reusable staging object on a best-effort
+    # basis, so every retry must retain its canonical key independently of the
+    # immutable object key stored on a READY or DELETING attachment.
+    object_keys = [f"pending/{attachment.pk}", attachment.object_key]
     if attachment.finalization_token is not None:
         token_key = f"media/{attachment.pk}/{attachment.finalization_token}"
-        if token_key != attachment.object_key:
-            object_keys.append(token_key)
+        object_keys.append(token_key)
     return _ExpiredMediaCleanupClaim(
         upload_id=attachment.pk,
         expires_at=attachment.expires_at,
-        object_keys=tuple(object_keys),
+        object_keys=tuple(dict.fromkeys(object_keys)),
     )
 
 

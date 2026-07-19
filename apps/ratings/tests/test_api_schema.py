@@ -288,6 +288,12 @@ def test_media_upload_operations_declare_direct_upload_lifecycle_contract(client
     initiate = paths["/api/v1/media-uploads/"]["post"]
     complete = paths["/api/v1/media-uploads/{upload_id}/complete/"]["post"]
     discard = paths["/api/v1/media-uploads/{upload_id}/discard/"]["post"]
+    assert discard["description"] == (
+        "현재 참가자가 업로드했지만 아직 점수 변경, 댓글 또는 공유 일기에 "
+        "연결하지 않은 파일을 즉시 정리합니다. 이미 폐기한 업로드를 다시 "
+        "요청하거나 존재하지 않는 업로드 ID를 요청해도 성공으로 응답합니다. "
+        "빈 JSON 객체와 CSRF 토큰을 전송해야 합니다."
+    )
 
     for operation in (initiate, complete, discard):
         assert operation["security"] == [{"cookieAuth": []}]

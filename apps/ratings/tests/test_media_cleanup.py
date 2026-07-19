@@ -23,6 +23,7 @@ from ..services.media_cleanup import (
 )
 from ..services.media_uploads import (
     FINALIZATION_LEASE_SECONDS,
+    MediaUploadStorageError,
     discard_media_upload,
 )
 
@@ -220,7 +221,10 @@ def test_cleanup_can_target_only_the_retired_upload_ids(participant_pair):
     assert result == ExpiredMediaCleanupResult(scanned=1, deleted=1, failed=0)
     assert not MediaAttachment.objects.filter(pk=target.pk).exists()
     assert MediaAttachment.objects.filter(pk=unrelated.pk).exists()
-    assert storage.deletion_requests == [target.object_key]
+    assert storage.deletion_requests == [
+        f"pending/{target.pk}",
+        target.object_key,
+    ]
 
 
 def test_cleanup_ignores_unexpired_unattached_uploads(participant_pair):
@@ -266,6 +270,7 @@ def test_finalizing_cleanup_deletes_pending_and_token_scoped_final_objects(
 
     assert result == ExpiredMediaCleanupResult(scanned=1, deleted=1, failed=0)
     assert set(storage.deletion_requests) == {
+        f"pending/{attachment.pk}",
         attachment.object_key,
         f"media/{attachment.pk}/{attachment.finalization_token}",
     }
@@ -306,7 +311,10 @@ def test_storage_deletion_failure_preserves_attachment_row(participant_pair):
     result = cleanup_expired_media_uploads(cutoff=cutoff, storage=storage)
 
     assert result == ExpiredMediaCleanupResult(scanned=1, deleted=0, failed=1)
-    assert storage.deletion_requests == [attachment.object_key]
+    assert storage.deletion_requests == [
+        f"pending/{attachment.pk}",
+        attachment.object_key,
+    ]
     attachment.refresh_from_db()
     assert attachment.status == MediaAttachment.Status.DELETING
 
@@ -331,15 +339,21 @@ def test_partial_finalizing_cleanup_resumes_from_its_deleting_tombstone(
     attachment.refresh_from_db()
     assert attachment.status == MediaAttachment.Status.DELETING
     assert attachment.finalization_token is not None
-    assert storage.deletion_requests == [attachment.object_key, token_key]
+    assert storage.deletion_requests == [
+        f"pending/{attachment.pk}",
+        attachment.object_key,
+        token_key,
+    ]
 
     storage.deletion_failures.clear()
     retry_result = cleanup_expired_media_uploads(cutoff=cutoff, storage=storage)
 
     assert retry_result == ExpiredMediaCleanupResult(scanned=1, deleted=1, failed=0)
     assert storage.deletion_requests == [
+        f"pending/{attachment.pk}",
         attachment.object_key,
         token_key,
+        f"pending/{attachment.pk}",
         attachment.object_key,
         token_key,
     ]
@@ -387,12 +401,51 @@ def test_cleanup_finish_preserves_a_newer_discard_grace(participant_pair):
     assert attachment.expires_at >= discard_started_before + timedelta(
         seconds=FINALIZATION_LEASE_SECONDS
     )
-    assert cleanup_storage.deletion_requests == [attachment.object_key, token_key]
+    assert cleanup_storage.deletion_requests == [
+        f"pending/{attachment.pk}",
+        attachment.object_key,
+        token_key,
+    ]
     assert discard_storage.deletion_requests == [
         f"pending/{attachment.pk}",
         attachment.object_key,
         token_key,
     ]
+
+
+def test_cleanup_retries_pending_object_after_partial_ready_discard_failure(
+    participant_pair,
+):
+    attachment = _create_attachment(
+        uploader=participant_pair.first,
+        status=MediaAttachment.Status.READY,
+        expires_at=timezone.now() + timedelta(minutes=10),
+        suffix="partial-ready-discard",
+    )
+    pending_key = f"pending/{attachment.pk}"
+    discard_storage = FakeMediaStorage(deletion_failures={pending_key})
+
+    with pytest.raises(MediaUploadStorageError, match="정리하지 못했어요"):
+        discard_media_upload(
+            upload_id=attachment.pk,
+            uploader=participant_pair.first,
+            storage=discard_storage,
+        )
+
+    attachment.refresh_from_db()
+    assert attachment.status == MediaAttachment.Status.DELETING
+    assert discard_storage.deletion_requests == [pending_key, attachment.object_key]
+
+    cleanup_storage = FakeMediaStorage()
+    result = cleanup_expired_media_uploads(
+        cutoff=timezone.now(),
+        upload_ids=(attachment.pk,),
+        storage=cleanup_storage,
+    )
+
+    assert result == ExpiredMediaCleanupResult(scanned=1, deleted=1, failed=0)
+    assert cleanup_storage.deletion_requests == [pending_key, attachment.object_key]
+    assert not MediaAttachment.objects.filter(pk=attachment.pk).exists()
 
 
 def test_cleanup_does_not_delete_r2_when_tombstone_write_fails(
@@ -456,9 +509,13 @@ def test_cleanup_keeps_tombstone_when_database_finish_fails(
     assert result == ExpiredMediaCleanupResult(scanned=1, deleted=0, failed=1)
     attachment.refresh_from_db()
     assert attachment.status == MediaAttachment.Status.DELETING
-    assert storage.deletion_requests == [attachment.object_key]
+    assert storage.deletion_requests == [
+        f"pending/{attachment.pk}",
+        attachment.object_key,
+    ]
     assert storage.deletion_statuses == [
-        (attachment.object_key, MediaAttachment.Status.DELETING)
+        (f"pending/{attachment.pk}", MediaAttachment.Status.DELETING),
+        (attachment.object_key, MediaAttachment.Status.DELETING),
     ]
 
 

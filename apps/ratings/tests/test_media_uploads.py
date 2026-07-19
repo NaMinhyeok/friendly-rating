@@ -1154,7 +1154,10 @@ def test_initiation_cleans_one_expired_upload_to_recover_quota(participant_pair)
     )
 
     assert MediaAttachment.objects.filter(uploader=participant_pair.first).count() == 20
-    assert storage.deletion_requests == [expired[0].object_key]
+    assert storage.deletion_requests == [
+        f"pending/{expired[0].pk}",
+        expired[0].object_key,
+    ]
     assert storage.upload_requests[0][0] == f"pending/{initiated.upload_id}"
 
 

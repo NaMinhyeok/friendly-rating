@@ -398,6 +398,7 @@ async function runDirectUploadLifecycle() {
         credentials: options.credentials,
         headers: options.headers,
         method: options.method,
+        redirect: options.redirect,
         stage: "put",
         url,
       });
@@ -472,7 +473,7 @@ async function runDirectUploadLifecycle() {
   };
 }
 
-function createLiveScoreMediaDiscardHarness() {
+function createLiveScoreMediaDiscardHarness({ discardResponse } = {}) {
   const uploadId = "00000000-0000-4000-8000-000000000007";
   const file = { name: "cancelled.jpg", size: 512, type: "image/jpeg" };
   const input = new FakeElement();
@@ -489,6 +490,7 @@ function createLiveScoreMediaDiscardHarness() {
   const root = new FakeElement({
     dataset: { mediaUploadsUrl: "/api/v1/media-uploads/" },
   });
+  const assignedLocations = [];
   const fetchCalls = [];
   const putStarted = deferred();
   let putSignal = null;
@@ -540,6 +542,9 @@ function createLiveScoreMediaDiscardHarness() {
         });
       }
       if (url === `/api/v1/media-uploads/${uploadId}/discard/`) {
+        if (discardResponse) {
+          return Promise.resolve(discardResponse);
+        }
         return Promise.resolve(
           jsonResponse(200, {
             resultType: "SUCCESS",
@@ -554,7 +559,9 @@ function createLiveScoreMediaDiscardHarness() {
     URL: TestUrl,
     window: {
       location: {
-        assign() {},
+        assign(value) {
+          assignedLocations.push(value);
+        },
         origin: "https://friendly.test",
         pathname: "/",
         search: "",
@@ -574,6 +581,7 @@ function createLiveScoreMediaDiscardHarness() {
   );
 
   return {
+    assignedLocations,
     fetchCalls,
     file,
     input,
@@ -897,6 +905,7 @@ test("media upload runs intent, direct PUT, and completion in order", async () =
   assert.equal(events[1].method, "PUT");
   assert.deepEqual(events[1].headers, { "Content-Type": "image/jpeg" });
   assert.equal(events[1].bodyIsFile, true);
+  assert.equal(events[1].redirect, "error");
   assert.equal(events[1].credentials, "omit");
   assert.equal(events[1].cache, "no-store");
 
@@ -957,51 +966,66 @@ test("removing a score image aborts its direct PUT and discards the retained int
   );
 });
 
-test("an upload abort signal cancels the browser XMLHttpRequest PUT", async () => {
-  const file = { name: "xhr-cancelled.jpg", size: 512, type: "image/jpeg" };
-  let request = null;
-  class FakeXmlHttpRequest {
-    constructor() {
-      request = this;
-      this.listeners = {};
-      this.requestHeaders = {};
-      this.upload = { addEventListener() {} };
-    }
+test("an expired session while discarding a removed score image redirects once", async () => {
+  const harness = createLiveScoreMediaDiscardHarness({
+    discardResponse: jsonResponse(401, {
+      resultType: "ERROR",
+      error: {
+        errorType: "AUTHENTICATION",
+        errorCode: "AUTHENTICATION_REQUIRED",
+        reason: "로그인이 필요합니다.",
+        details: [],
+      },
+      success: null,
+    }),
+  });
+  harness.input.files = [harness.file];
+  harness.input.listeners.change();
+  await harness.putStarted;
 
-    abort() {
-      this.aborted = true;
-      this.listeners.abort();
-    }
+  harness.selection.children[0].children[2].listeners.click();
+  await settleAsyncWork();
 
-    addEventListener(type, listener) {
-      this.listeners[type] = listener;
-    }
+  assert.deepEqual(harness.assignedLocations, ["/login/?next=%2F"]);
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) =>
+        call.url ===
+        `/api/v1/media-uploads/${harness.uploadId}/discard/`,
+    ).length,
+    1,
+  );
+});
 
-    open(method, url) {
-      this.method = method;
-      this.url = url;
-    }
-
-    send(body) {
-      this.body = body;
-    }
-
-    setRequestHeader(name, value) {
-      this.requestHeaders[name] = value;
-    }
-  }
+test("an upload abort signal cancels the fetch PUT", async () => {
+  const file = { name: "fetch-cancelled.jpg", size: 512, type: "image/jpeg" };
+  let putOptions = null;
   const sandbox = {
     AbortController,
+    clearTimeout,
     console,
     document: {
       querySelector() {
         return null;
       },
     },
+    fetch(_url, options = {}) {
+      putOptions = options;
+      return new Promise((_resolve, reject) => {
+        const rejectCancelledUpload = () => reject(new Error("fetch aborted"));
+        if (options.signal?.aborted) {
+          rejectCancelledUpload();
+        } else {
+          options.signal?.addEventListener("abort", rejectCancelledUpload, {
+            once: true,
+          });
+        }
+      });
+    },
     file,
+    setTimeout,
     URL,
     window: { location: { origin: "https://friendly.test" } },
-    XMLHttpRequest: FakeXmlHttpRequest,
   };
 
   vm.runInNewContext(
@@ -1009,9 +1033,9 @@ test("an upload abort signal cancels the browser XMLHttpRequest PUT", async () =
       {
         const controller = new AbortController();
         globalThis.uploadAbortController = controller;
-        globalThis.xhrUploadPromise = putFileWithProgress(
+        globalThis.fetchUploadPromise = putFileWithProgress(
           {
-            uploadUrl: "https://r2.example.test/pending/xhr-cancelled",
+            uploadUrl: "https://r2.example.test/pending/fetch-cancelled",
             requiredHeaders: { "Content-Type": "image/jpeg" },
           },
           globalThis.file,
@@ -1024,14 +1048,72 @@ test("an upload abort signal cancels the browser XMLHttpRequest PUT", async () =
     { filename: dashboardScriptPath },
   );
 
-  assert.equal(request.method, "PUT");
-  assert.equal(request.body, file);
+  assert.equal(putOptions.method, "PUT");
+  assert.equal(putOptions.body, file);
+  assert.equal(putOptions.redirect, "error");
+  assert.equal(putOptions.credentials, "omit");
+  assert.equal(putOptions.cache, "no-store");
+  assert.equal(putOptions.signal.aborted, false);
   sandbox.uploadAbortController.abort();
-  await assert.rejects(sandbox.xhrUploadPromise, (error) => {
+  await assert.rejects(sandbox.fetchUploadPromise, (error) => {
     assert.equal(error.name, "MediaUploadCancelledError");
     return true;
   });
-  assert.equal(request.aborted, true);
+  assert.equal(putOptions.signal.aborted, true);
+});
+
+test("direct upload rejects redirect responses without following them", async () => {
+  for (const response of [
+    { ok: false, redirected: false },
+    { ok: true, redirected: true },
+  ]) {
+    const file = { name: "redirect.jpg", size: 512, type: "image/jpeg" };
+    const progress = [];
+    let putOptions = null;
+    const sandbox = {
+      AbortController,
+      clearTimeout,
+      console,
+      document: {
+        querySelector() {
+          return null;
+        },
+      },
+      fetch(_url, options = {}) {
+        putOptions = options;
+        return Promise.resolve(response);
+      },
+      file,
+      progress,
+      setTimeout,
+      URL,
+      window: { location: { origin: "https://friendly.test" } },
+    };
+
+    vm.runInNewContext(
+      `${dashboardSource}
+        globalThis.redirectUploadPromise = putFileWithProgress(
+          {
+            uploadUrl: "https://r2.example.test/pending/redirect",
+            requiredHeaders: { "Content-Type": "image/jpeg" },
+          },
+          globalThis.file,
+          (value) => globalThis.progress.push(value),
+        );
+      `,
+      sandbox,
+      { filename: dashboardScriptPath },
+    );
+
+    await assert.rejects(
+      sandbox.redirectUploadPromise,
+      /파일 저장소가 업로드를 거부했습니다/,
+    );
+    assert.equal(putOptions.redirect, "error");
+    assert.equal(putOptions.credentials, "omit");
+    assert.equal(putOptions.cache, "no-store");
+    assert.deepEqual(progress, [20]);
+  }
 });
 
 test("score image selection starts upload and submit reuses the in-flight work", async () => {

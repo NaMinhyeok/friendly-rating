@@ -806,113 +806,61 @@ async function stopIfMediaUploadDiscarded(item, context) {
 }
 
 function putFileWithProgress(intent, file, onProgress, cancellationSignal = null) {
-  if (typeof XMLHttpRequest !== "function") {
-    onProgress(20);
-    const controller =
-      typeof AbortController === "function" ? new AbortController() : null;
-    let didTimeOut = false;
-    const cancelUpload = () => controller?.abort();
-    if (cancellationSignal?.aborted) {
-      cancelUpload();
-    } else {
-      cancellationSignal?.addEventListener?.("abort", cancelUpload, {
-        once: true,
-      });
-    }
-    const timeoutId =
-      controller && typeof setTimeout === "function"
-        ? setTimeout(() => {
-            didTimeOut = true;
-            controller.abort();
-          }, MEDIA_UPLOAD_TIMEOUT_MS)
-        : null;
-    return fetch(intent.uploadUrl, {
-      method: "PUT",
-      headers: intent.requiredHeaders,
-      body: file,
-      credentials: "omit",
-      cache: "no-store",
-      ...(controller
-        ? { signal: controller.signal }
-        : cancellationSignal
-          ? { signal: cancellationSignal }
-          : {}),
-    })
-      .then((response) => {
-        if (!response.ok || response.redirected) {
-          throw new Error("파일 저장소가 업로드를 거부했습니다.");
-        }
-        onProgress(92);
-      })
-      .catch((error) => {
-        if (cancellationSignal?.aborted) {
-          throw new MediaUploadCancelledError();
-        }
-        if (didTimeOut) {
-          throw new Error(
-            "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
-          );
-        }
-        throw error;
-      })
-      .finally(() => {
-        cancellationSignal?.removeEventListener?.("abort", cancelUpload);
-        if (timeoutId !== null && typeof clearTimeout === "function") {
-          clearTimeout(timeoutId);
-        }
-      });
-  }
-
-  return new Promise((resolve, reject) => {
-    const request = new XMLHttpRequest();
-    const cancelUpload = () => request.abort();
-    const cleanUpCancellationListener = () => {
-      cancellationSignal?.removeEventListener?.("abort", cancelUpload);
-    };
-    request.open("PUT", intent.uploadUrl, true);
-    request.withCredentials = false;
-    request.timeout = MEDIA_UPLOAD_TIMEOUT_MS;
-    Object.entries(intent.requiredHeaders).forEach(([name, value]) => {
-      request.setRequestHeader(name, value);
-    });
-    request.upload?.addEventListener("progress", (event) => {
-      if (event.lengthComputable && event.total > 0) {
-        onProgress(Math.round((event.loaded / event.total) * 92));
-      }
-    });
-    request.addEventListener("load", () => {
-      cleanUpCancellationListener();
-      if (request.status >= 200 && request.status < 300) {
-        onProgress(92);
-        resolve();
-      } else {
-        reject(new Error("파일 저장소가 업로드를 거부했습니다."));
-      }
-    });
-    request.addEventListener("error", () => {
-      cleanUpCancellationListener();
-      reject(new Error("파일을 올리는 중 네트워크 연결이 끊겼습니다."));
-    });
-    request.addEventListener("abort", () => {
-      cleanUpCancellationListener();
-      reject(new MediaUploadCancelledError());
-    });
-    request.addEventListener("timeout", () => {
-      cleanUpCancellationListener();
-      reject(
-        new Error("파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요."),
-      );
-    });
-    if (cancellationSignal?.aborted) {
-      cleanUpCancellationListener();
-      reject(new MediaUploadCancelledError());
-      return;
-    }
+  onProgress(20);
+  const controller =
+    typeof AbortController === "function" ? new AbortController() : null;
+  let didTimeOut = false;
+  const cancelUpload = () => controller?.abort();
+  if (cancellationSignal?.aborted) {
+    cancelUpload();
+  } else {
     cancellationSignal?.addEventListener?.("abort", cancelUpload, {
       once: true,
     });
-    request.send(file);
-  });
+  }
+  const timeoutId =
+    controller && typeof setTimeout === "function"
+      ? setTimeout(() => {
+          didTimeOut = true;
+          controller.abort();
+        }, MEDIA_UPLOAD_TIMEOUT_MS)
+      : null;
+  return fetch(intent.uploadUrl, {
+    method: "PUT",
+    headers: intent.requiredHeaders,
+    body: file,
+    redirect: "error",
+    credentials: "omit",
+    cache: "no-store",
+    ...(controller
+      ? { signal: controller.signal }
+      : cancellationSignal
+        ? { signal: cancellationSignal }
+        : {}),
+  })
+    .then((response) => {
+      if (!response.ok || response.redirected) {
+        throw new Error("파일 저장소가 업로드를 거부했습니다.");
+      }
+      onProgress(92);
+    })
+    .catch((error) => {
+      if (cancellationSignal?.aborted) {
+        throw new MediaUploadCancelledError();
+      }
+      if (didTimeOut) {
+        throw new Error(
+          "파일 업로드 시간이 초과되었습니다. 다시 시도해 주세요.",
+        );
+      }
+      throw error;
+    })
+    .finally(() => {
+      cancellationSignal?.removeEventListener?.("abort", cancelUpload);
+      if (timeoutId !== null && typeof clearTimeout === "function") {
+        clearTimeout(timeoutId);
+      }
+    });
 }
 
 function updateUploadProgress(item, value, label) {

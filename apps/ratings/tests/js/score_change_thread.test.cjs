@@ -584,7 +584,9 @@ test("a media-only comment uploads directly and renders the attachment safely", 
   assert.equal(directPut.options.method, "PUT");
   assert.equal(directPut.options.body, file);
   assert.deepEqual(directPut.options.headers, { "Content-Type": "image/jpeg" });
+  assert.equal(directPut.options.redirect, "error");
   assert.equal(directPut.options.credentials, "omit");
+  assert.equal(directPut.options.cache, "no-store");
 
   const completeCall = harness.fetchCalls.find(
     (call) => call.url === `/api/v1/media-uploads/${uploadId}/complete/`,
@@ -607,6 +609,125 @@ test("a media-only comment uploads directly and renders the attachment safely", 
   assert.equal(harness.sandbox.compromised, undefined);
   assert.equal(harness.formStatus.textContent, "댓글을 남겼어요.");
   assert.equal(harness.textarea.value, "");
+});
+
+test("an upload abort signal cancels the comment fetch PUT", async () => {
+  const file = { name: "fetch-cancelled.jpg", size: 512, type: "image/jpeg" };
+  let putOptions = null;
+  const sandbox = {
+    AbortController,
+    clearTimeout,
+    console,
+    document: {
+      querySelector() {
+        return null;
+      },
+    },
+    fetch(_url, options = {}) {
+      putOptions = options;
+      return new Promise((_resolve, reject) => {
+        const rejectCancelledUpload = () => reject(new Error("fetch aborted"));
+        if (options.signal?.aborted) {
+          rejectCancelledUpload();
+        } else {
+          options.signal?.addEventListener("abort", rejectCancelledUpload, {
+            once: true,
+          });
+        }
+      });
+    },
+    file,
+    setTimeout,
+    URL,
+    window: { location: { origin: "https://friendly.test" } },
+  };
+
+  vm.runInNewContext(
+    `${threadSource}
+      {
+        const controller = new AbortController();
+        globalThis.uploadAbortController = controller;
+        globalThis.fetchUploadPromise = putFileWithProgress(
+          {
+            uploadUrl: "https://r2.example.test/pending/fetch-cancelled",
+            requiredHeaders: { "Content-Type": "image/jpeg" },
+          },
+          globalThis.file,
+          () => undefined,
+          controller.signal,
+        );
+      }
+    `,
+    sandbox,
+    { filename: threadScriptPath },
+  );
+
+  assert.equal(putOptions.method, "PUT");
+  assert.equal(putOptions.body, file);
+  assert.equal(putOptions.redirect, "error");
+  assert.equal(putOptions.credentials, "omit");
+  assert.equal(putOptions.cache, "no-store");
+  assert.equal(putOptions.signal.aborted, false);
+  sandbox.uploadAbortController.abort();
+  await assert.rejects(sandbox.fetchUploadPromise, (error) => {
+    assert.equal(error.name, "MediaUploadCancelledError");
+    return true;
+  });
+  assert.equal(putOptions.signal.aborted, true);
+});
+
+test("comment direct upload rejects redirect responses without following them", async () => {
+  for (const response of [
+    { ok: false, redirected: false },
+    { ok: true, redirected: true },
+  ]) {
+    const file = { name: "redirect.jpg", size: 512, type: "image/jpeg" };
+    const progress = [];
+    let putOptions = null;
+    const sandbox = {
+      AbortController,
+      clearTimeout,
+      console,
+      document: {
+        querySelector() {
+          return null;
+        },
+      },
+      fetch(_url, options = {}) {
+        putOptions = options;
+        return Promise.resolve(response);
+      },
+      file,
+      progress,
+      setTimeout,
+      URL,
+      window: { location: { origin: "https://friendly.test" } },
+    };
+
+    vm.runInNewContext(
+      `${threadSource}
+        globalThis.redirectUploadPromise = putFileWithProgress(
+          {
+            uploadUrl: "https://r2.example.test/pending/redirect",
+            requiredHeaders: { "Content-Type": "image/jpeg" },
+          },
+          globalThis.file,
+          (value) => globalThis.progress.push(value),
+        );
+      `,
+      sandbox,
+      { filename: threadScriptPath },
+    );
+
+    await assert.rejects(
+      sandbox.redirectUploadPromise,
+      /파일 저장소가 업로드를 거부했습니다/,
+    );
+    assert.equal(putOptions.redirect, "error");
+    assert.equal(putOptions.credentials, "omit");
+    assert.equal(putOptions.cache, "no-store");
+    assert.deepEqual(progress, [20]);
+  }
 });
 
 test("video selection preuploads immediately and submit reuses the in-flight upload", async () => {
