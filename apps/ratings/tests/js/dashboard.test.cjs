@@ -594,7 +594,10 @@ function createLiveScoreMediaDiscardHarness({ discardResponse } = {}) {
   };
 }
 
-function createScoreMediaManagerHarness(uploadPromises) {
+function createScoreMediaManagerHarness(
+  uploadPromises,
+  { discardError = null } = {},
+) {
   const input = new FakeElement();
   const selection = new FakeElement();
   const status = new FakeElement();
@@ -626,6 +629,7 @@ function createScoreMediaManagerHarness(uploadPromises) {
     form,
     root,
     discardCalls,
+    discardError,
     uploadCalls,
     uploadPromises,
     URL: {
@@ -685,6 +689,12 @@ function createScoreMediaManagerHarness(uploadPromises) {
             method: options.method,
             url,
           });
+          if (globalThis.discardError) {
+            throw new ApiRequestError(
+              globalThis.discardError.status,
+              globalThis.discardError.apiError,
+            );
+          }
           return { resultType: "SUCCESS", error: null, success: null };
         };
         globalThis.scoreMediaManager = initializeScoreMedia(
@@ -1406,6 +1416,36 @@ test("an expired session during background score image upload redirects immediat
   ]);
   assert.equal(harness.status.textContent, "사진을 올리고 있어요…");
   assert.equal(harness.status.attributes["class:media-status--error"], false);
+});
+
+test("replacing a score image redirects once when stale discard and current upload both expire", async () => {
+  const oldUpload = deferred();
+  const currentUpload = deferred();
+  const authenticationError = {
+    asApiRequestError: true,
+    status: 401,
+    apiError: {
+      errorCode: "AUTHENTICATION_REQUIRED",
+      reason: "로그인이 필요합니다.",
+      details: [],
+    },
+  };
+  const harness = createScoreMediaManagerHarness(
+    [oldUpload.promise, currentUpload.promise],
+    { discardError: authenticationError },
+  );
+
+  harness.select({ name: "old.jpg", size: 512, type: "image/jpeg" });
+  harness.select({ name: "current.jpg", size: 1024, type: "image/jpeg" });
+
+  oldUpload.resolve("00000000-0000-4000-8000-000000000003");
+  currentUpload.reject(authenticationError);
+  await settleAsyncWork();
+
+  assert.deepEqual(harness.assignedLocations, [
+    "/login/?next=%2F%3Ffrom%3Dupload",
+  ]);
+  assert.equal(harness.discardCalls.length, 1);
 });
 
 test("a replaced score image discards the stale upload completion", async () => {

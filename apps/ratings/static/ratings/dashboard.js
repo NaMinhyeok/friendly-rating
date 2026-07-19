@@ -1,5 +1,6 @@
 const dashboard = document.querySelector("[data-dashboard-root]");
 const MEDIA_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+let dashboardAuthenticationRedirectStarted = false;
 
 if (dashboard) {
   initializeDashboard(dashboard);
@@ -259,7 +260,7 @@ function initializeScoreMedia(root, form) {
         }
         if (
           uploadItem === item &&
-          redirectMediaUploadAuthenticationOnce(uploadItem, error)
+          redirectWhenAuthenticationExpired(error)
         ) {
           throw new MediaUploadError(error.message, error, {
             authenticationRedirected: true,
@@ -397,7 +398,6 @@ function initializeScoreMedia(root, form) {
 function createUploadItem(file) {
   return {
     file,
-    authenticationRedirected: false,
     previewUrl: createPreviewUrl(file),
     progress: null,
     progressStatus: null,
@@ -567,25 +567,9 @@ function abandonMediaUpload(item, { csrfToken, uploadsUrl }) {
 }
 
 function discardMediaUploadBestEffort(item, context) {
-  if (item.authenticationRedirected) {
-    return Promise.resolve();
-  }
   return discardMediaUpload(item, context).catch((error) => {
-    redirectMediaUploadAuthenticationOnce(item, error);
+    redirectWhenAuthenticationExpired(error);
   });
-}
-
-function redirectMediaUploadAuthenticationOnce(item, error) {
-  if (
-    !(error instanceof ApiRequestError) ||
-    error.apiError?.errorCode !== "AUTHENTICATION_REQUIRED"
-  ) {
-    return false;
-  }
-  if (!item.authenticationRedirected) {
-    item.authenticationRedirected = redirectWhenAuthenticationExpired(error);
-  }
-  return item.authenticationRedirected;
 }
 
 function discardMediaUpload(item, { csrfToken, uploadsUrl }) {
@@ -1253,6 +1237,10 @@ function redirectWhenAuthenticationExpired(error) {
     error instanceof ApiRequestError &&
     error.apiError?.errorCode === "AUTHENTICATION_REQUIRED"
   ) {
+    if (dashboardAuthenticationRedirectStarted) {
+      return true;
+    }
+    dashboardAuthenticationRedirectStarted = true;
     const next = `${window.location.pathname}${window.location.search}`;
     window.location.assign(`/login/?next=${encodeURIComponent(next)}`);
     return true;

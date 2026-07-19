@@ -1,5 +1,6 @@
 const scoreThread = document.querySelector("[data-score-thread-root]");
 const MEDIA_UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
+let scoreThreadAuthenticationRedirectStarted = false;
 
 if (scoreThread) {
   initializeScoreThread(scoreThread);
@@ -1310,6 +1311,10 @@ function redirectWhenAuthenticationExpired(error) {
     error instanceof ApiRequestError &&
     error.apiError?.errorCode === "AUTHENTICATION_REQUIRED"
   ) {
+    if (scoreThreadAuthenticationRedirectStarted) {
+      return true;
+    }
+    scoreThreadAuthenticationRedirectStarted = true;
     const next = `${window.location.pathname}${window.location.search}`;
     window.location.assign(`/login/?next=${encodeURIComponent(next)}`);
     return true;

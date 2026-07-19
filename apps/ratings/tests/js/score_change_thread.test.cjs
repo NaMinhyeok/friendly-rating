@@ -980,6 +980,76 @@ test("removing an in-flight video aborts its PUT and discards the upload", async
   });
 });
 
+test("discard authentication expiry redirects once across removal cleanup races", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000015";
+  const file = { name: "로그인-만료.jpg", size: 1024, type: "image/jpeg" };
+  let resolvePut;
+  const harness = createThreadHarness({
+    AbortControllerImplementation: AbortController,
+    withMedia: true,
+    fetchImplementation(url) {
+      if (url === "/api/v1/score-changes/31/") {
+        return Promise.resolve(jsonResponse(200, threadPayload({ comments: [] })));
+      }
+      if (url === "/api/v1/media-uploads/") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            resultType: "SUCCESS",
+            error: null,
+            success: {
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/auth-expired",
+              requiredHeaders: { "Content-Type": file.type },
+              expiresAt: "2026-07-19T12:00:00Z",
+            },
+          }),
+        );
+      }
+      if (url === "https://r2.example.test/pending/auth-expired") {
+        return new Promise((resolve) => {
+          resolvePut = () => resolve({ ok: true, redirected: false });
+        });
+      }
+      if (url === `/api/v1/media-uploads/${uploadId}/discard/`) {
+        return Promise.resolve(
+          jsonResponse(401, {
+            resultType: "ERROR",
+            error: {
+              errorType: "AUTHENTICATION",
+              errorCode: "AUTHENTICATION_REQUIRED",
+              reason: "로그인이 필요합니다.",
+              details: [],
+            },
+            success: null,
+          }),
+        );
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    },
+  });
+  await settleAsyncWork();
+
+  harness.mediaInput.files = [file];
+  harness.mediaInput.listeners.change();
+  await settleAsyncWork();
+  harness.mediaSelection.children[0].children[2].listeners.click();
+  await settleAsyncWork();
+
+  resolvePut();
+  await settleAsyncWork();
+
+  assert.equal(
+    harness.fetchCalls.filter(
+      (call) =>
+        call.url === `/api/v1/media-uploads/${uploadId}/discard/`,
+    ).length,
+    2,
+  );
+  assert.deepEqual(harness.assignedLocations, [
+    "/login/?next=%2Fhistory%2F31%2F%3Ffrom%3Dpush",
+  ]);
+});
+
 test("removal racing upload completion discards once and never attaches the ID", async () => {
   const uploadId = "00000000-0000-4000-8000-000000000013";
   const file = { name: "완료-직전.jpg", size: 1024, type: "image/jpeg" };
