@@ -116,3 +116,7 @@ def test_notification_client_sends_the_rendered_csrf_token():
     assert 'payload?.resultType !== "SUCCESS"' in source
     assert "payload?.error !== null" in source
     assert "payload?.success?.registered !== expectedRegistered" in source
+    assert source.count("syncFid(root.dataset.registerUrl, fid, true)") == 1
+    assert source.count("syncFid(root.dataset.unregisterUrl, fid, false)") == 2
+    assert "syncFid(root.dataset.registerUrl, fid, false)" not in source
+    assert "syncFid(root.dataset.unregisterUrl, fid, true)" not in source

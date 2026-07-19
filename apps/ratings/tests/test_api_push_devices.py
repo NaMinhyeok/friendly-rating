@@ -133,6 +133,7 @@ def test_participant_registers_device_with_rendered_csrf_and_same_origin(
         "error": None,
         "success": {"registered": True},
     }
+    assert response.json()["success"]["registered"] is True
     assert device.participant == participant_pair.first
     assert device.is_active
     assert device.user_agent == "test-browser/1.0"
@@ -189,6 +190,7 @@ def test_unregister_is_idempotent_for_owned_device(participant_pair, device_exis
         "error": None,
         "success": {"registered": False},
     }
+    assert response.json()["success"]["registered"] is False
     if device is not None:
         device.refresh_from_db()
         assert not device.is_active

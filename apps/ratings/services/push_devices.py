@@ -32,7 +32,16 @@ def register_participant_push_device(
     if not is_valid_firebase_installation_id(firebase_installation_id):
         raise ValueError("Invalid Firebase installation ID.")
 
-    Participant.objects.select_for_update().get(pk=participant.pk)
+    # A registration can reassign a globally unique FID and then delete another
+    # participant's former device while enforcing the five-device limit. Lock the
+    # two participant rows in one stable order so cross-owner swaps cannot deadlock.
+    locked_participant_ids = set(
+        Participant.objects.select_for_update()
+        .order_by("pk")
+        .values_list("pk", flat=True)
+    )
+    if participant.pk not in locked_participant_ids:
+        raise Participant.DoesNotExist
     _, created = PushDevice.objects.update_or_create(
         firebase_installation_id=firebase_installation_id,
         defaults={
