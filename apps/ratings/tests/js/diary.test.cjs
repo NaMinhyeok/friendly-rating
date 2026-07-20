@@ -222,6 +222,7 @@ function createDiaryHarness({
   const createdTags = [];
   const documentListeners = {};
   const fetchCalls = [];
+  const globalListeners = {};
   const toasts = [];
   const location = {
     assign(value) {
@@ -238,6 +239,7 @@ function createDiaryHarness({
     URLSearchParams,
     console,
     document: {
+      visibilityState: "visible",
       addEventListener(type, listener) {
         documentListeners[type] = listener;
       },
@@ -259,6 +261,9 @@ function createDiaryHarness({
       return fetchImplementation
         ? fetchImplementation(url, options, fetchCalls.length)
         : Promise.resolve(response);
+    },
+    addEventListener(type, listener) {
+      globalListeners[type] = listener;
     },
     window: {
       confirm(message) {
@@ -290,6 +295,7 @@ function createDiaryHarness({
     empty,
     fetchCalls,
     focusCompose,
+    globalListeners,
     list,
     listStatus,
     mediaInput,
@@ -507,6 +513,42 @@ test("diary refreshes comment counts only for a local canonical diary push", asy
   assert.equal(findTag(harness.list, "a").textContent, "댓글 1개 · 이야기 나누기");
 });
 
+test("diary refreshes comment counts after visible and BFCache restores", async () => {
+  const harness = createDiaryHarness({
+    fetchImplementation(_url, _options, callNumber) {
+      return Promise.resolve(
+        jsonResponse(
+          200,
+          diaryPage({
+            results: [diaryEntry({ commentCount: callNumber - 1 })],
+          }),
+        ),
+      );
+    },
+    search: "?pageNumber=2",
+  });
+  await settleAsyncWork();
+
+  harness.sandbox.document.visibilityState = "hidden";
+  harness.documentListeners.visibilitychange();
+  harness.globalListeners.pageshow({ persisted: false });
+  await settleAsyncWork();
+  assert.equal(harness.fetchCalls.length, 1);
+
+  harness.sandbox.document.visibilityState = "visible";
+  harness.documentListeners.visibilitychange();
+  await settleAsyncWork();
+  harness.globalListeners.pageshow({ persisted: true });
+  await settleAsyncWork();
+
+  assert.equal(harness.fetchCalls.length, 3);
+  assert.equal(
+    String(harness.fetchCalls[2].url),
+    "https://friendly.test/api/v1/diary-entries/?pageNumber=2",
+  );
+  assert.equal(findTag(harness.list, "a").textContent, "댓글 2개 · 이야기 나누기");
+});
+
 test("diary push preserves an open editor and its active upload", async () => {
   const uploadId = "00000000-0000-4000-8000-000000000091";
   const file = { name: "푸시 중 수정.jpg", size: 512, type: "image/jpeg" };
@@ -572,6 +614,9 @@ test("diary push preserves an open editor and its active upload", async () => {
   harness.documentListeners["woorisai:push-message"]({
     detail: { threadLink: "/diary/31/" },
   });
+  harness.sandbox.document.visibilityState = "visible";
+  harness.documentListeners.visibilitychange();
+  harness.globalListeners.pageshow({ persisted: true });
   await settleAsyncWork();
 
   assert.equal(listRequestCount, 1);
@@ -586,8 +631,8 @@ test("diary push preserves an open editor and its active upload", async () => {
   assert.equal(discardCount, 1);
 });
 
-test("an in-flight diary push refresh cannot replace an editor opened afterward", async () => {
-  let finishPushRefresh;
+test("an in-flight diary restore refresh cannot replace an editor opened afterward", async () => {
+  let finishRestoreRefresh;
   let listRequestCount = 0;
   const harness = createDiaryHarness({
     fetchImplementation(_url, options) {
@@ -597,7 +642,7 @@ test("an in-flight diary push refresh cannot replace an editor opened afterward"
       listRequestCount += 1;
       if (listRequestCount === 2) {
         return new Promise((resolve) => {
-          finishPushRefresh = resolve;
+          finishRestoreRefresh = resolve;
         });
       }
       return Promise.resolve(
@@ -607,15 +652,13 @@ test("an in-flight diary push refresh cannot replace an editor opened afterward"
   });
   await settleAsyncWork();
 
-  harness.documentListeners["woorisai:push-message"]({
-    detail: { threadLink: "/diary/31/" },
-  });
+  harness.globalListeners.pageshow({ persisted: true });
   findButton(harness.list, "수정").listeners.click();
   const editForm = findTag(harness.list, "form");
   const editContent = findByName(editForm, "content");
   editContent.value = "응답보다 늦게 시작한 수정 내용";
 
-  finishPushRefresh(
+  finishRestoreRefresh(
     jsonResponse(
       200,
       diaryPage({ results: [diaryEntry({ commentCount: 1 })] }),

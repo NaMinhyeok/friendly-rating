@@ -204,12 +204,24 @@ function initializeDiary(root) {
       contentInput?.focus();
     },
   );
-  document.addEventListener?.("woorisai:push-message", (event) => {
-    if (
-      isLocalDiaryThreadLink(event?.detail?.threadLink) &&
-      !hasActiveDiaryItem(root)
-    ) {
+  const refreshPageSafely = () => {
+    if (!hasActiveDiaryItem(root)) {
       loadPage({ protectActiveItems: true }).catch(() => undefined);
+    }
+  };
+  document.addEventListener?.("woorisai:push-message", (event) => {
+    if (isLocalDiaryThreadLink(event?.detail?.threadLink)) {
+      refreshPageSafely();
+    }
+  });
+  document.addEventListener?.("visibilitychange", () => {
+    if (document.visibilityState === "visible") {
+      refreshPageSafely();
+    }
+  });
+  globalThis.addEventListener?.("pageshow", (event) => {
+    if (event.persisted) {
+      refreshPageSafely();
     }
   });
 
