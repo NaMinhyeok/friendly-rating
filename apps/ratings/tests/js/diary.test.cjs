@@ -475,6 +475,40 @@ test("diary avatars keep a leading emoji intact", async () => {
   assert.equal(avatar.textContent, "🙂");
 });
 
+test("diary renders multiple images as an accessible carousel", async () => {
+  const attachments = [
+    mediaAttachment(),
+    mediaAttachment({
+      fileName: "두 번째 사진.jpg",
+      id: "00000000-0000-4000-8000-000000000002",
+    }),
+  ];
+  const harness = createDiaryHarness({
+    response: jsonResponse(
+      200,
+      diaryPage({ results: [diaryEntry({ attachments })] }),
+    ),
+  });
+
+  await settleAsyncWork();
+
+  const gallery = descendants(harness.list).find((child) =>
+    child.className.includes("attachment-gallery--carousel"),
+  );
+  assert.equal(
+    gallery.className,
+    "attachment-gallery attachment-gallery--carousel",
+  );
+  assert.equal(gallery.attributes.role, "region");
+  assert.equal(gallery.attributes["aria-roledescription"], "이미지 슬라이더");
+  assert.equal(gallery.attributes["aria-label"], "일기에 첨부된 파일 · 이미지 2장");
+  assert.equal(gallery.tabIndex, 0);
+  assert.deepEqual(
+    gallery.children.map((child) => child.attributes["aria-label"]),
+    ["이미지 1 / 2", "이미지 2 / 2"],
+  );
+});
+
 test("diary rejects a thread URL that does not belong to its entry", async () => {
   const entry = diaryEntry();
   entry.threadUrl = "/diary/32/";

@@ -546,12 +546,29 @@ function createAttachmentGallery(attachments, { label }) {
   if (attachments.length === 0) {
     return null;
   }
+  const isCarousel = attachments.length > 1;
   const gallery = document.createElement("div");
   gallery.className = `attachment-gallery${
     attachments.length === 1 ? " attachment-gallery--single" : ""
-  }`;
-  gallery.setAttribute("aria-label", label);
-  attachments.forEach((attachment) => gallery.append(createAttachment(attachment)));
+  }${isCarousel ? " attachment-gallery--carousel" : ""}`;
+  gallery.setAttribute(
+    "aria-label",
+    isCarousel ? `${label} · 이미지 ${attachments.length}장` : label,
+  );
+  if (isCarousel) {
+    gallery.setAttribute("aria-roledescription", "이미지 슬라이더");
+    gallery.setAttribute("role", "region");
+    gallery.tabIndex = 0;
+  }
+  attachments.forEach((attachment, index) => {
+    const item = createAttachment(attachment);
+    if (isCarousel) {
+      item.setAttribute("aria-label", `이미지 ${index + 1} / ${attachments.length}`);
+      item.setAttribute("aria-roledescription", "슬라이드");
+      item.setAttribute("role", "group");
+    }
+    gallery.append(item);
+  });
   return gallery;
 }
 

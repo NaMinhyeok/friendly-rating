@@ -1286,6 +1286,12 @@ textarea:focus {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.attachment-gallery--carousel:focus-visible {
+  border-radius: 14px;
+  outline: 3px solid rgba(232, 103, 88, 0.28);
+  outline-offset: 3px;
+}
+
 .attachment {
   min-width: 0;
   margin: 0.85rem 0;
@@ -1785,6 +1791,29 @@ textarea:focus {
 
   .attachment-gallery--single {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 60rem) {
+  .attachment-gallery--carousel {
+    grid-template-columns: none;
+    grid-auto-flow: column;
+    grid-auto-columns: 90%;
+    min-width: 0;
+    max-width: 100%;
+    align-items: start;
+    padding-bottom: 0.35rem;
+    overflow-x: auto;
+    overflow-y: hidden;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: 0.1rem;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .attachment-gallery--carousel > .attachment {
+    scroll-snap-align: start;
+    scroll-snap-stop: always;
   }
 }
 
