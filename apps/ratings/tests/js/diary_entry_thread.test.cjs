@@ -87,6 +87,7 @@ function diaryComment({
 
 function diaryThreadPayload({
   attachments = [],
+  authorName = "첫째 <script>",
   comments = [diaryComment()],
   content = '<svg onload="globalThis.compromised=true">함께 걸었어',
 } = {}) {
@@ -95,7 +96,7 @@ function diaryThreadPayload({
     resultType: "SUCCESS",
     success: {
       attachments,
-      author: { displayName: "첫째 <script>", slot: 1 },
+      author: { displayName: authorName, slot: 1 },
       commentCount: comments.length,
       comments,
       content,
@@ -262,6 +263,10 @@ function descendantText(element) {
   ].join("");
 }
 
+function descendants(element) {
+  return [element, ...element.children.flatMap((child) => descendants(child))];
+}
+
 test("diary thread fetches and safely renders its entry, attachments, and comments", async () => {
   const comments = [
     diaryComment({
@@ -310,6 +315,22 @@ test("diary thread fetches and safely renders its entry, attachments, and commen
   assert.equal(harness.createdTags.includes("script"), false);
   assert.equal(harness.createdTags.includes("svg"), false);
   assert.equal(harness.sandbox.compromised, undefined);
+});
+
+test("diary thread avatars keep a leading emoji intact", async () => {
+  const harness = createThreadHarness({
+    response: jsonResponse(
+      200,
+      diaryThreadPayload({ authorName: "🙂민지", comments: [] }),
+    ),
+  });
+
+  await settleAsyncWork();
+
+  const avatar = descendants(harness.entryRoot).find(
+    (child) => child.className === "diary-card__avatar",
+  );
+  assert.equal(avatar.textContent, "🙂");
 });
 
 test("diary comment submission sends CSRF once and refreshes after a matching push", async () => {

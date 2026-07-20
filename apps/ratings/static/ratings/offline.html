@@ -15,7 +15,11 @@
       min-height: 100dvh;
       margin: 0;
       place-items: center;
-      padding: max(1.5rem, env(safe-area-inset-top)) 1.25rem max(1.5rem, env(safe-area-inset-bottom));
+      padding:
+        max(1.5rem, env(safe-area-inset-top))
+        max(1.25rem, env(safe-area-inset-right))
+        max(1.5rem, env(safe-area-inset-bottom))
+        max(1.25rem, env(safe-area-inset-left));
       color: #392d2a;
       background: radial-gradient(circle at 50% 20%, #ffe0d8, transparent 20rem), #fff8f1;
       text-align: center;

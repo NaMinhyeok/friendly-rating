@@ -87,6 +87,7 @@ function jsonResponse(status, payload) {
 
 function diaryEntry({
   attachments = [],
+  authorName = null,
   commentCount = 0,
   content = "함께 걸어서 좋았어",
   id = 31,
@@ -95,7 +96,7 @@ function diaryEntry({
 } = {}) {
   return {
     author: {
-      displayName: isMine ? "첫째 <script>" : "둘째",
+      displayName: authorName || (isMine ? "첫째 <script>" : "둘째"),
       slot: isMine ? 1 : 2,
     },
     attachments,
@@ -456,6 +457,22 @@ test("diary fetches and safely renders the requested shared page with its thread
   assert.equal(harness.content.attributes["aria-busy"], "false");
   assert.equal(harness.diaryContent.disabled, false);
   assert.equal(harness.createSubmit.disabled, false);
+});
+
+test("diary avatars keep a leading emoji intact", async () => {
+  const harness = createDiaryHarness({
+    response: jsonResponse(
+      200,
+      diaryPage({ results: [diaryEntry({ authorName: "🙂민지" })] }),
+    ),
+  });
+
+  await settleAsyncWork();
+
+  const avatar = descendants(harness.list).find(
+    (child) => child.className === "diary-card__avatar",
+  );
+  assert.equal(avatar.textContent, "🙂");
 });
 
 test("diary rejects a thread URL that does not belong to its entry", async () => {
@@ -1070,6 +1087,10 @@ test("removing a selected video aborts its active upload and discards the intent
   harness.mediaInput.files = [file];
   harness.mediaInput.listeners.change();
   await settleAsyncWork();
+  assert.equal(
+    harness.mediaSelection.children[0].className,
+    "media-preview-card media-preview-card--video",
+  );
   assert.equal(
     harness.fetchCalls.some(
       (call) => call.url === "https://r2.example.test/pending/video",

@@ -809,6 +809,10 @@ test("video selection preuploads immediately and submit reuses the in-flight upl
   harness.mediaInput.files = [file];
   harness.mediaInput.listeners.change();
   await settleAsyncWork();
+  assert.equal(
+    harness.mediaSelection.children[0].className,
+    "media-preview-card media-preview-card--video",
+  );
 
   const uploadCalls = () =>
     harness.fetchCalls.filter((call) =>

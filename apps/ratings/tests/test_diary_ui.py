@@ -34,10 +34,13 @@ def test_home_links_to_the_shared_diary(client, participant_pair):
 
     response = client.get(reverse("home"))
 
+    content = response.content.decode()
     assert response.status_code == 200
-    assert f'href="{reverse("diary")}"' in response.content.decode()
-    assert "우리 일기" in response.content.decode()
-    assert "점수와 상관없이 오늘의 이야기를 함께 남겨요" in response.content.decode()
+    assert f'href="{reverse("diary")}"' in content
+    assert "우리 일기" in content
+    assert "점수와 상관없이 오늘의 이야기를 함께 남겨요" in content
+    assert 'name="reason"' in content
+    assert 'maxlength="200"' not in content
 
 
 def test_diary_media_controls_follow_private_storage_availability(

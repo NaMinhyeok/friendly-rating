@@ -697,9 +697,12 @@ function createUploadItem(file) {
 
 function createUploadPreview(item, { onRemove, removeLabel }) {
   const card = document.createElement("article");
-  card.className = "media-preview-card";
+  const isVideo = VIDEO_CONTENT_TYPES.includes(item.file.type);
+  card.className = `media-preview-card${
+    isVideo ? " media-preview-card--video" : ""
+  }`;
   let visual;
-  if (VIDEO_CONTENT_TYPES.includes(item.file.type)) {
+  if (isVideo) {
     visual = document.createElement("video");
     visual.autoplay = false;
     visual.controls = true;
@@ -745,7 +748,9 @@ function createUploadPreview(item, { onRemove, removeLabel }) {
 
 function createExistingAttachmentPreview(attachment, { disabled, onRemove }) {
   const card = document.createElement("article");
-  card.className = "media-preview-card";
+  card.className = `media-preview-card${
+    attachment.kind === "video" ? " media-preview-card--video" : ""
+  }`;
   const visual = createAttachmentVisual(attachment, { isPreview: true });
   const details = document.createElement("div");
   details.className = "media-preview-card__details";
@@ -1395,7 +1400,7 @@ function createDiaryItem(initialEntry, callbacks) {
     const avatar = document.createElement("span");
     avatar.className = "diary-card__avatar";
     avatar.setAttribute("aria-hidden", "true");
-    avatar.textContent = entry.author.displayName.slice(0, 1);
+    avatar.textContent = [...entry.author.displayName][0] || "";
     const heading = document.createElement("div");
     const author = document.createElement("strong");
     author.textContent = entry.isMine
