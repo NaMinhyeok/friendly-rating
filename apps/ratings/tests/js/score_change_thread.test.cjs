@@ -268,6 +268,10 @@ function descendantText(element) {
   ].join("");
 }
 
+function descendants(element) {
+  return [element, ...element.children.flatMap((child) => descendants(child))];
+}
+
 function readMediaUploadResetDecision({ status, errorCode }) {
   const fixture = JSON.stringify({ status, errorCode });
   const sandbox = {
@@ -380,6 +384,55 @@ test("thread fetches and safely renders the score change and comments", async ()
   assert.equal(harness.createdTags.includes("img"), false);
   assert.equal(harness.createdTags.includes("svg"), false);
   assert.equal(harness.sandbox.compromised, undefined);
+});
+
+test("score comments render multiple images as an accessible carousel", async () => {
+  const attachments = [
+    {
+      id: "00000000-0000-4000-8000-000000000001",
+      kind: "image",
+      fileName: "첫 번째 사진.jpg",
+      contentType: "image/jpeg",
+      byteSize: 512,
+      contentUrl: "/media/00000000-0000-4000-8000-000000000001/content/",
+    },
+    {
+      id: "00000000-0000-4000-8000-000000000002",
+      kind: "image",
+      fileName: "두 번째 사진.jpg",
+      contentType: "image/jpeg",
+      byteSize: 512,
+      contentUrl: "/media/00000000-0000-4000-8000-000000000002/content/",
+    },
+  ];
+  const harness = createThreadHarness({
+    fetchImplementation() {
+      return Promise.resolve(
+        jsonResponse(
+          200,
+          threadPayload({ comments: [comment({ attachments })] }),
+        ),
+      );
+    },
+  });
+
+  await settleAsyncWork();
+
+  const gallery = descendants(harness.commentList).find((child) =>
+    child.className.includes("attachment-gallery--carousel"),
+  );
+  assert.equal(
+    gallery.className,
+    "attachment-gallery attachment-gallery--carousel",
+  );
+  assert.equal(gallery.attributes.role, "region");
+  assert.equal(gallery.attributes["aria-roledescription"], "이미지 슬라이더");
+  assert.equal(gallery.attributes["aria-label"], "댓글에 첨부된 파일 · 이미지 2장");
+  assert.equal(gallery.tabIndex, 0);
+  assert.deepEqual(
+    gallery.children.map((child) => child.attributes["aria-label"]),
+    ["이미지 1 / 2", "이미지 2 / 2"],
+  );
 });
 
 test("comment submission sends CSRF once and appends the created comment", async () => {

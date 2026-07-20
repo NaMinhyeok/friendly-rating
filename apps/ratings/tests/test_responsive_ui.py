@@ -22,6 +22,34 @@ def test_uploaded_media_uses_mobile_safe_responsive_layout():
     gallery = _css_rule(css, r"\.attachment-gallery")
     assert "grid-template-columns: minmax(0, 1fr)" in gallery
 
+    carousel = _css_rule(css, r"\.attachment-gallery--carousel")
+    assert "grid-auto-flow: column" in carousel
+    assert "grid-auto-columns: 90%" in carousel
+    assert "overflow-x: auto" in carousel
+    assert "scroll-snap-type: x mandatory" in carousel
+
+    carousel_slide = _css_rule(css, r"\.attachment-gallery--carousel > \.attachment")
+    assert "scroll-snap-align: start" in carousel_slide
+    assert "scroll-snap-stop: always" in carousel_slide
+
+    assert (
+        re.search(
+            r"@media \(max-width: 60rem\).*?\.attachment-gallery--carousel",
+            css,
+            re.DOTALL,
+        )
+        is not None
+    )
+    assert (
+        re.search(
+            r"@media \(min-width: 42rem\).*?\.attachment-gallery\s*\{[^}]*"
+            r"grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)",
+            css,
+            re.DOTALL,
+        )
+        is not None
+    )
+
     media = _css_rule(css, r"\.attachment img,\s*\.attachment video")
     assert "height: auto" in media
     assert "max-width: 100%" in media

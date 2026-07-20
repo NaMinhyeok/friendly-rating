@@ -109,13 +109,15 @@ function diaryThreadPayload({
   };
 }
 
-function diaryAttachment() {
-  const id = "00000000-0000-4000-8000-000000000001";
+function diaryAttachment({
+  fileName = '<script>globalThis.compromised=true</script>.jpg',
+  id = "00000000-0000-4000-8000-000000000001",
+} = {}) {
   return {
     byteSize: 512,
     contentType: "image/jpeg",
     contentUrl: `/media/${id}/content/`,
-    fileName: '<script>globalThis.compromised=true</script>.jpg',
+    fileName,
     id,
     kind: "image",
   };
@@ -331,6 +333,40 @@ test("diary thread avatars keep a leading emoji intact", async () => {
     (child) => child.className === "diary-card__avatar",
   );
   assert.equal(avatar.textContent, "🙂");
+});
+
+test("diary thread renders multiple images as an accessible carousel", async () => {
+  const attachments = [
+    diaryAttachment(),
+    diaryAttachment({
+      fileName: "두 번째 사진.jpg",
+      id: "00000000-0000-4000-8000-000000000002",
+    }),
+  ];
+  const harness = createThreadHarness({
+    response: jsonResponse(
+      200,
+      diaryThreadPayload({ attachments, comments: [] }),
+    ),
+  });
+
+  await settleAsyncWork();
+
+  const gallery = descendants(harness.entryRoot).find((child) =>
+    child.className.includes("attachment-gallery--carousel"),
+  );
+  assert.equal(
+    gallery.className,
+    "attachment-gallery attachment-gallery--carousel",
+  );
+  assert.equal(gallery.attributes.role, "region");
+  assert.equal(gallery.attributes["aria-roledescription"], "이미지 슬라이더");
+  assert.equal(gallery.attributes["aria-label"], "일기에 첨부된 파일 · 이미지 2장");
+  assert.equal(gallery.tabIndex, 0);
+  assert.deepEqual(
+    gallery.children.map((child) => child.attributes["aria-label"]),
+    ["이미지 1 / 2", "이미지 2 / 2"],
+  );
 });
 
 test("diary comment submission sends CSRF once and refreshes after a matching push", async () => {
