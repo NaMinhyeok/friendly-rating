@@ -2,6 +2,7 @@ from django.urls import path
 
 from .views import (
     ApiNotFoundView,
+    DiaryEntryCommentCreateView,
     DiaryEntryDetailView,
     DiaryEntryListView,
     MediaUploadCompleteView,
@@ -27,6 +28,11 @@ urlpatterns = [
         "diary-entries/<int:diary_entry_id>/",
         DiaryEntryDetailView.as_view(),
         name="diary-entry-detail",
+    ),
+    path(
+        "diary-entries/<int:diary_entry_id>/comments/",
+        DiaryEntryCommentCreateView.as_view(),
+        name="diary-entry-comment-list",
     ),
     path(
         "media-uploads/",

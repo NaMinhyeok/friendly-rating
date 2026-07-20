@@ -87,6 +87,7 @@ function jsonResponse(status, payload) {
 
 function diaryEntry({
   attachments = [],
+  commentCount = 0,
   content = "함께 걸어서 좋았어",
   id = 31,
   isMine = true,
@@ -98,10 +99,12 @@ function diaryEntry({
       slot: isMine ? 1 : 2,
     },
     attachments,
+    commentCount,
     content,
     createdAt: "2026-07-19T01:23:00Z",
     id,
     isMine,
+    threadUrl: `/diary/${id}/`,
     updatedAt,
   };
 }
@@ -217,6 +220,7 @@ function createDiaryHarness({
   const assignedLocations = [];
   const confirmMessages = [];
   const createdTags = [];
+  const documentListeners = {};
   const fetchCalls = [];
   const toasts = [];
   const location = {
@@ -234,6 +238,9 @@ function createDiaryHarness({
     URLSearchParams,
     console,
     document: {
+      addEventListener(type, listener) {
+        documentListeners[type] = listener;
+      },
       createElement(tagName) {
         createdTags.push(tagName);
         return new FakeElement({ tagName });
@@ -279,6 +286,7 @@ function createDiaryHarness({
     createSubmitLabel,
     createdTags,
     diaryContent,
+    documentListeners,
     empty,
     fetchCalls,
     focusCompose,
@@ -396,10 +404,14 @@ function runDirectFetchUpload(fetchImplementation, { signal } = {}) {
   return { fetchCalls, promise: sandbox.uploadPromise };
 }
 
-test("diary fetches and safely renders the requested shared page", async () => {
+test("diary fetches and safely renders the requested shared page with its thread link", async () => {
   const unsafeContent =
     '<img src=x onerror="globalThis.compromised=true">\n' + "😀".repeat(10);
-  const entry = diaryEntry({ content: unsafeContent, isMine: false });
+  const entry = diaryEntry({
+    commentCount: 2,
+    content: unsafeContent,
+    isMine: false,
+  });
   const harness = createDiaryHarness({
     response: jsonResponse(
       200,
@@ -425,6 +437,10 @@ test("diary fetches and safely renders the requested shared page", async () => {
   assert.match(descendantText(harness.list), /2026\.07\.19 10:23 게시/);
   assert.equal(findButton(harness.list, "수정"), undefined);
   assert.equal(findButton(harness.list, "삭제"), undefined);
+  const threadLink = findTag(harness.list, "a");
+  assert.equal(threadLink.href, "/diary/31/");
+  assert.equal(threadLink.textContent, "댓글 2개 · 이야기 나누기");
+  assert.equal(harness.list.children[0].children[0].id, "diary-entry-31");
   assert.equal(harness.createdTags.includes("img"), false);
   assert.equal(harness.createdTags.includes("script"), false);
   assert.equal(harness.sandbox.compromised, undefined);
@@ -434,6 +450,182 @@ test("diary fetches and safely renders the requested shared page", async () => {
   assert.equal(harness.content.attributes["aria-busy"], "false");
   assert.equal(harness.diaryContent.disabled, false);
   assert.equal(harness.createSubmit.disabled, false);
+});
+
+test("diary rejects a thread URL that does not belong to its entry", async () => {
+  const entry = diaryEntry();
+  entry.threadUrl = "/diary/32/";
+  const harness = createDiaryHarness({
+    response: jsonResponse(200, diaryPage({ results: [entry] })),
+  });
+
+  await settleAsyncWork();
+
+  assert.match(descendantText(harness.listStatus), /불러오지 못했어요/);
+  assert.equal(harness.list.children.length, 0);
+});
+
+test("diary refreshes comment counts only for a local canonical diary push", async () => {
+  const harness = createDiaryHarness({
+    fetchImplementation(_url, _options, callNumber) {
+      return Promise.resolve(
+        jsonResponse(
+          200,
+          diaryPage({
+            results: [diaryEntry({ commentCount: callNumber - 1 })],
+          }),
+        ),
+      );
+    },
+    search: "?pageNumber=2",
+  });
+  await settleAsyncWork();
+
+  for (const threadLink of [
+    "/history/31/",
+    "/diary/0/",
+    "/diary/31/?from=push",
+    "https://evil.test/diary/31/",
+  ]) {
+    harness.documentListeners["woorisai:push-message"]({
+      detail: { threadLink },
+    });
+  }
+  await settleAsyncWork();
+  assert.equal(harness.fetchCalls.length, 1);
+
+  harness.documentListeners["woorisai:push-message"]({
+    detail: { threadLink: "https://friendly.test/diary/31/" },
+  });
+  await settleAsyncWork();
+
+  assert.equal(harness.fetchCalls.length, 2);
+  assert.equal(
+    String(harness.fetchCalls[1].url),
+    "https://friendly.test/api/v1/diary-entries/?pageNumber=2",
+  );
+  assert.equal(findTag(harness.list, "a").textContent, "댓글 1개 · 이야기 나누기");
+});
+
+test("diary push preserves an open editor and its active upload", async () => {
+  const uploadId = "00000000-0000-4000-8000-000000000091";
+  const file = { name: "푸시 중 수정.jpg", size: 512, type: "image/jpeg" };
+  let discardCount = 0;
+  let listRequestCount = 0;
+  let putWasAborted = false;
+  const harness = createDiaryHarness({
+    withMedia: true,
+    fetchImplementation(url, options) {
+      const target = String(url);
+      if (!options.method) {
+        listRequestCount += 1;
+        return Promise.resolve(
+          jsonResponse(200, diaryPage({ results: [diaryEntry()] })),
+        );
+      }
+      if (target === "/api/v1/media-uploads/" && options.method === "POST") {
+        return Promise.resolve(
+          jsonResponse(201, {
+            error: null,
+            resultType: "SUCCESS",
+            success: {
+              expiresAt: "2099-07-19T12:00:00Z",
+              requiredHeaders: { "Content-Type": file.type },
+              uploadId,
+              uploadUrl: "https://r2.example.test/pending/push-edit",
+            },
+          }),
+        );
+      }
+      if (target === "https://r2.example.test/pending/push-edit") {
+        return new Promise((_resolve, reject) => {
+          options.signal.addEventListener(
+            "abort",
+            () => {
+              putWasAborted = true;
+              reject(new Error("upload aborted"));
+            },
+            { once: true },
+          );
+        });
+      }
+      if (target.endsWith(`/media-uploads/${uploadId}/discard/`)) {
+        discardCount += 1;
+        return Promise.resolve(jsonResponse(200, mutationSuccess(null)));
+      }
+      throw new Error(`Unexpected request: ${target} ${options.method}`);
+    },
+  });
+  await settleAsyncWork();
+
+  findButton(harness.list, "수정").listeners.click();
+  const editForm = findTag(harness.list, "form");
+  const editContent = findByName(editForm, "content");
+  const editMediaInput = descendants(editForm).find(
+    (element) => element.tagName === "input" && element.type === "file",
+  );
+  editContent.value = "푸시 뒤에도 남아야 할 수정 내용";
+  editMediaInput.files = [file];
+  editMediaInput.listeners.change();
+  await settleAsyncWork();
+
+  harness.documentListeners["woorisai:push-message"]({
+    detail: { threadLink: "/diary/31/" },
+  });
+  await settleAsyncWork();
+
+  assert.equal(listRequestCount, 1);
+  assert.equal(findTag(harness.list, "form"), editForm);
+  assert.equal(editContent.value, "푸시 뒤에도 남아야 할 수정 내용");
+  assert.equal(putWasAborted, false);
+  assert.equal(discardCount, 0);
+
+  findButton(editForm, "취소").listeners.click();
+  await settleAsyncWork();
+  assert.equal(putWasAborted, true);
+  assert.equal(discardCount, 1);
+});
+
+test("an in-flight diary push refresh cannot replace an editor opened afterward", async () => {
+  let finishPushRefresh;
+  let listRequestCount = 0;
+  const harness = createDiaryHarness({
+    fetchImplementation(_url, options) {
+      if (options.method) {
+        throw new Error(`Unexpected request method: ${options.method}`);
+      }
+      listRequestCount += 1;
+      if (listRequestCount === 2) {
+        return new Promise((resolve) => {
+          finishPushRefresh = resolve;
+        });
+      }
+      return Promise.resolve(
+        jsonResponse(200, diaryPage({ results: [diaryEntry()] })),
+      );
+    },
+  });
+  await settleAsyncWork();
+
+  harness.documentListeners["woorisai:push-message"]({
+    detail: { threadLink: "/diary/31/" },
+  });
+  findButton(harness.list, "수정").listeners.click();
+  const editForm = findTag(harness.list, "form");
+  const editContent = findByName(editForm, "content");
+  editContent.value = "응답보다 늦게 시작한 수정 내용";
+
+  finishPushRefresh(
+    jsonResponse(
+      200,
+      diaryPage({ results: [diaryEntry({ commentCount: 1 })] }),
+    ),
+  );
+  await settleAsyncWork();
+
+  assert.equal(listRequestCount, 2);
+  assert.equal(findTag(harness.list, "form"), editForm);
+  assert.equal(editContent.value, "응답보다 늦게 시작한 수정 내용");
 });
 
 test("diary create sends CSRF once, locks the form, and refreshes", async () => {

@@ -380,6 +380,27 @@ test("background push navigates an open app window to the score thread", async (
   ]);
 });
 
+test("background push navigates the diary list to a diary conversation", async () => {
+  const existing = createWindowClient("https://friendly.test/diary/");
+  const harness = createHarness({ windowClients: [existing.client] });
+  const click = createNotificationClickEvent(
+    "https://friendly.test/diary/44/?from=push",
+  );
+
+  clickHandler(harness)(click.event);
+  await click.settle();
+
+  assert.equal(click.state.propagationStopped, true);
+  assert.equal(click.state.closed, true);
+  assert.deepEqual(existing.calls.actions, [
+    "navigate:/diary/44/?from=push",
+    "focus",
+  ]);
+  assert.deepEqual(existing.calls.navigate, ["/diary/44/?from=push"]);
+  assert.equal(existing.calls.focus, 1);
+  assert.deepEqual(harness.openedUrls, []);
+});
+
 test("background push focuses an app window already showing the score thread", async () => {
   const existing = createWindowClient("https://friendly.test/history/31/");
   const harness = createHarness({ windowClients: [existing.client] });
@@ -1037,6 +1058,7 @@ test("activation preserves the handoff cache while removing old app caches", asy
     "woorisai-static-v8",
     "woorisai-static-v9",
     "woorisai-static-v10",
+    "woorisai-static-v11",
     HANDOFF_CACHE,
     "third-party-cache",
   ]) {
@@ -1052,8 +1074,9 @@ test("activation preserves the handoff cache while removing old app caches", asy
     "woorisai-static-v7",
     "woorisai-static-v8",
     "woorisai-static-v9",
+    "woorisai-static-v10",
   ]);
-  assert.equal(cacheStorage.stores.has("woorisai-static-v10"), true);
+  assert.equal(cacheStorage.stores.has("woorisai-static-v11"), true);
   assert.equal(cacheStorage.stores.has(HANDOFF_CACHE), true);
   assert.equal(cacheStorage.stores.has("third-party-cache"), true);
 });
@@ -1070,13 +1093,15 @@ test("background push does not navigate an unrelated same-origin window", async 
   assert.deepEqual(harness.openedUrls, ["/history/31/"]);
 });
 
-test("background push rejects links outside the local score thread route", () => {
+test("background push rejects links outside local conversation routes", () => {
   for (const unsafeLink of [
     "https://evil.test/history/31/",
     "//evil.test/history/31/",
     "https://friendly.test/",
     "https://friendly.test/history/0/",
     "https://friendly.test/history/31/extra/",
+    "https://friendly.test/diary/0/",
+    "https://friendly.test/diary/31/extra/",
     "http://[",
     null,
     31,

@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}일기 대화 · 우리 사이{% endblock %}
+{% block body_class %}app-page{% endblock %}
+
+{% block content %}
+<header class="app-header">
+    <a class="back-link" href="{% url 'diary' %}"><span aria-hidden="true">←</span> 우리 일기로</a>
+    <span class="mini-brand"><span class="mini-brand__mark" aria-hidden="true">♥</span><span>우리 사이</span></span>
+</header>
+
+<main
+    class="app-shell app-shell--narrow"
+    data-diary-thread-root
+    data-thread-url="{% url 'api-v1:diary-entry-detail' diary_entry_id=diary_entry_id %}"
+    data-comments-url="{% url 'api-v1:diary-entry-comment-list' diary_entry_id=diary_entry_id %}"
+>
+    <noscript>
+        <section class="surface loading-state loading-state--error">
+            일기 대화를 확인하려면 브라우저의 JavaScript를 켜 주세요.
+        </section>
+    </noscript>
+
+    <section class="hero hero--compact" aria-labelledby="thread-title">
+        <p class="eyebrow">DIARY TALK</p>
+        <h1 id="thread-title">이 이야기에 대한 대화</h1>
+        <p>함께 남긴 순간에 천천히 답장을 건네 보세요.</p>
+    </section>
+
+    <section data-thread-content aria-busy="true">
+        <p class="surface loading-state" data-thread-status role="status" aria-live="polite">
+            일기 대화를 불러오고 있어요…
+        </p>
+
+        <div class="thread-layout" data-thread-view hidden>
+            <article class="surface diary-card diary-thread-origin" data-thread-entry></article>
+
+            <section class="surface thread-comments" aria-labelledby="comments-title">
+                <header class="thread-comments__header">
+                    <div>
+                        <p class="eyebrow">COMMENTS</p>
+                        <h2 id="comments-title">댓글 <span data-comment-count>0</span></h2>
+                    </div>
+                    <button class="text-button" type="button" data-thread-refresh>새로고침</button>
+                </header>
+
+                <ol class="comment-list" data-comment-list></ol>
+                <p class="comment-empty" data-comment-empty>아직 댓글이 없어요. 먼저 이야기를 건네 보세요.</p>
+
+                <form class="comment-form" data-comment-form aria-busy="false" novalidate>
+                    {% csrf_token %}
+                    <label class="field-label-row" for="diary-comment-content">
+                        <span class="field-label">댓글 달기</span>
+                        <span class="character-count"><span data-comment-character-current>0</span>/500</span>
+                    </label>
+                    <textarea
+                        id="diary-comment-content"
+                        name="content"
+                        rows="5"
+                        placeholder="이 일기에 답장을 남겨 보세요"
+                        aria-describedby="diary-comment-status"
+                        required
+                        disabled
+                    ></textarea>
+                    <p id="diary-comment-status" class="form-status" data-comment-form-status role="status" aria-live="polite"></p>
+                    <button class="button button--primary button--full" type="submit" data-comment-submit disabled>
+                        <span data-comment-submit-label>댓글 남기기</span>
+                    </button>
+                </form>
+            </section>
+        </div>
+    </section>
+</main>
+{% endblock %}
+
+{% block extra_scripts %}
+    <script type="module" src="{% static 'ratings/diary_entry_thread.js' %}"></script>
+    {% include "ratings/_notification_runtime.html" %}
+{% endblock %}

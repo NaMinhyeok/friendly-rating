@@ -7,6 +7,11 @@ urlpatterns = [
     path("login/", views.login_view, name="login"),
     path("logout/", views.logout_view, name="logout"),
     path("diary/", views.diary_view, name="diary"),
+    path(
+        "diary/<int:diary_entry_id>/",
+        views.diary_entry_thread_view,
+        name="diary-entry-thread",
+    ),
     path("history/", views.history_view, name="history"),
     path(
         "history/<int:score_change_id>/",

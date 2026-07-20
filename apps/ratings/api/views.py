@@ -24,6 +24,7 @@ from rest_framework.views import APIView
 
 from ..models import (
     DiaryEntry,
+    DiaryEntryComment,
     MediaAttachment,
     Participant,
     RelationshipScore,
@@ -39,6 +40,7 @@ from ..services import (
     MediaUploadStorageError,
     MediaUploadValidationError,
     ScoreUnchangedError,
+    add_diary_entry_comment,
     add_score_change_comment,
     change_relationship_score,
     complete_media_upload,
@@ -63,6 +65,9 @@ from .serializers import (
     CompletedMediaUploadDataSerializer,
     CompletedMediaUploadSuccessEnvelopeSerializer,
     DeltaScoreChangeCommand,
+    DiaryEntryCommentDataSerializer,
+    DiaryEntryCommentRequestSerializer,
+    DiaryEntryCommentSuccessEnvelopeSerializer,
     DiaryEntryCreateRequestSerializer,
     DiaryEntryDataSerializer,
     DiaryEntryDeletedSuccessEnvelopeSerializer,
@@ -70,6 +75,8 @@ from .serializers import (
     DiaryEntryPageQuerySerializer,
     DiaryEntryPageSuccessEnvelopeSerializer,
     DiaryEntrySuccessEnvelopeSerializer,
+    DiaryEntryThreadDataSerializer,
+    DiaryEntryThreadSuccessEnvelopeSerializer,
     DiaryEntryUpdateRequestSerializer,
     ForbiddenErrorEnvelopeSerializer,
     InitiatedMediaUploadDataSerializer,
@@ -227,6 +234,16 @@ def _diary_attachment_prefetch() -> Prefetch[str]:
     )
 
 
+def _diary_comment_prefetch() -> Prefetch[str]:
+    return Prefetch(
+        "comments",
+        queryset=DiaryEntryComment.objects.select_related("author").order_by(
+            "created_at",
+            "pk",
+        ),
+    )
+
+
 def _score_changes_for_participant(
     participant: Participant,
 ) -> QuerySet[ScoreChange]:
@@ -278,6 +295,7 @@ class DiaryEntryListView(APIView):
         entries = (
             DiaryEntry.objects.select_related("author")
             .prefetch_related(_diary_attachment_prefetch())
+            .annotate(comment_count=Count("comments"))
             .order_by(
                 "-created_at",
                 "-pk",
@@ -358,13 +376,19 @@ class DiaryEntryDetailView(APIView):
     schema = DiaryEntryAutoSchema()
 
     @staticmethod
-    def _entry(diary_entry_id: int) -> DiaryEntry:
-        return get_object_or_404(
-            DiaryEntry.objects.select_related("author").prefetch_related(
-                _diary_attachment_prefetch()
-            ),
-            pk=diary_entry_id,
+    def _entry(
+        diary_entry_id: int,
+        *,
+        include_comments: bool = False,
+    ) -> DiaryEntry:
+        entries = (
+            DiaryEntry.objects.select_related("author")
+            .prefetch_related(_diary_attachment_prefetch())
+            .annotate(comment_count=Count("comments"))
         )
+        if include_comments:
+            entries = entries.prefetch_related(_diary_comment_prefetch())
+        return get_object_or_404(entries, pk=diary_entry_id)
 
     @extend_schema(
         operation_id="retrieveDiaryEntry",
@@ -372,7 +396,7 @@ class DiaryEntryDetailView(APIView):
         description="두 참가자가 공유하는 일기 한 편을 조회합니다.",
         tags=("diaryEntries",),
         responses={
-            200: DiaryEntrySuccessEnvelopeSerializer,
+            200: DiaryEntryThreadSuccessEnvelopeSerializer,
             403: ReadForbiddenErrorEnvelopeSerializer,
             404: NotFoundErrorEnvelopeSerializer,
             406: NotAcceptableErrorEnvelopeSerializer,
@@ -381,8 +405,8 @@ class DiaryEntryDetailView(APIView):
     )
     def get(self, request: Request, diary_entry_id: int) -> Response:
         participant = _participant_for_request(request)
-        entry = self._entry(diary_entry_id)
-        serializer = DiaryEntryDataSerializer(
+        entry = self._entry(diary_entry_id, include_comments=True)
+        serializer = DiaryEntryThreadDataSerializer(
             entry,
             context={"participant_id": participant.pk},
         )
@@ -465,6 +489,60 @@ class DiaryEntryDetailView(APIView):
         except DiaryEntryNotFoundError as error:
             raise NotFound() from error
         return _private_no_store(Response(None))
+
+
+class DiaryEntryCommentCreateView(APIView):
+    schema = DiaryEntryAutoSchema()
+
+    @extend_schema(
+        operation_id="createDiaryEntryComment",
+        summary="공유 일기에 댓글 작성",
+        description=(
+            "현재 참가자가 공유 일기에 댓글을 작성합니다. 작성자는 세션에서 결정되며 "
+            "JSON 요청 본문은 4KiB 이하여야 합니다."
+        ),
+        tags=("diaryEntries",),
+        parameters=[CSRF_HEADER_PARAMETER],
+        request=DiaryEntryCommentRequestSerializer,
+        responses={
+            201: DiaryEntryCommentSuccessEnvelopeSerializer,
+            400: BadRequestErrorEnvelopeSerializer,
+            403: ForbiddenErrorEnvelopeSerializer,
+            404: NotFoundErrorEnvelopeSerializer,
+            406: NotAcceptableErrorEnvelopeSerializer,
+            413: RequestBodyTooLargeErrorEnvelopeSerializer,
+            415: UnsupportedMediaTypeErrorEnvelopeSerializer,
+            500: InternalServerErrorEnvelopeSerializer,
+        },
+    )
+    def post(self, request: Request, diary_entry_id: int) -> Response:
+        participant = _participant_for_request(request)
+        entry = get_object_or_404(DiaryEntry, pk=diary_entry_id)
+        serializer = DiaryEntryCommentRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        command = serializer.to_command()
+
+        try:
+            comment = add_diary_entry_comment(
+                diary_entry=entry,
+                author=participant,
+                content=command.content,
+            )
+        except DjangoValidationError as error:
+            raise ValidationError({"content": error.messages}) from error
+        except DiaryEntryNotFoundError as error:
+            raise NotFound() from error
+
+        response_serializer = DiaryEntryCommentDataSerializer(
+            comment,
+            context={"participant_id": participant.pk},
+        )
+        return _private_no_store(
+            Response(
+                response_serializer.data,
+                status=status.HTTP_201_CREATED,
+            )
+        )
 
 
 class RelationshipScoreListView(APIView):

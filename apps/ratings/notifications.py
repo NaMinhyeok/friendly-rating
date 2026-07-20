@@ -61,21 +61,15 @@ def _get_firebase_app():
             return None
 
 
-def _notification_webpush_config(*, score_change_id: int):
+def _notification_webpush_config(*, path: str):
     public_base_url = settings.PUBLIC_BASE_URL
     parsed_url = urlsplit(public_base_url)
     if parsed_url.scheme != "https" or not parsed_url.netloc:
         return None
 
-    thread_url = urljoin(
-        public_base_url,
-        reverse(
-            "score-change-thread",
-            kwargs={"score_change_id": score_change_id},
-        ),
-    )
+    notification_url = urljoin(public_base_url, path)
     return messaging.WebpushConfig(
-        fcm_options=messaging.WebpushFCMOptions(link=thread_url),
+        fcm_options=messaging.WebpushFCMOptions(link=notification_url),
     )
 
 
@@ -96,11 +90,11 @@ def _deactivate_invalid_devices(devices, responses):
         )
 
 
-def _send_private_thread_notification(
+def _send_private_notification(
     *,
     recipient_id: int,
-    score_change_id: int,
     body: str,
+    path: str,
 ) -> int:
     if not settings.PUSH_NOTIFICATIONS_ENABLED:
         return 0
@@ -127,15 +121,29 @@ def _send_private_thread_notification(
                 title="우리 사이",
                 body=body,
             ),
-            webpush=_notification_webpush_config(
-                score_change_id=score_change_id,
-            ),
+            webpush=_notification_webpush_config(path=path),
         )
         response = messaging.send_each_for_multicast(message, app=firebase_app)
         sent_count += response.success_count
         _deactivate_invalid_devices(device_batch, response.responses)
 
     return sent_count
+
+
+def _send_private_thread_notification(
+    *,
+    recipient_id: int,
+    score_change_id: int,
+    body: str,
+) -> int:
+    return _send_private_notification(
+        recipient_id=recipient_id,
+        body=body,
+        path=reverse(
+            "score-change-thread",
+            kwargs={"score_change_id": score_change_id},
+        ),
+    )
 
 
 def send_score_change_notification(
@@ -179,6 +187,32 @@ def send_score_comment_notification(
             extra={
                 "recipient_id": recipient_id,
                 "score_change_id": score_change_id,
+            },
+        )
+        return 0
+
+
+def send_diary_comment_notification(
+    *,
+    recipient_id: int,
+    diary_entry_id: int,
+) -> int:
+    """Send a private comment notice linked to its shared diary entry."""
+    try:
+        return _send_private_notification(
+            recipient_id=recipient_id,
+            body="새로운 댓글이 도착했어요",
+            path=reverse(
+                "diary-entry-thread",
+                kwargs={"diary_entry_id": diary_entry_id},
+            ),
+        )
+    except Exception:
+        logger.exception(
+            "Failed to send diary-comment push notification.",
+            extra={
+                "recipient_id": recipient_id,
+                "diary_entry_id": diary_entry_id,
             },
         )
         return 0

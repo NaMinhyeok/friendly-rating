@@ -357,7 +357,7 @@ function readThreadLink(value) {
     const url = new URL(value, window.location.origin);
     if (
       url.origin !== window.location.origin ||
-      !/^\/history\/[1-9]\d*\/$/.test(url.pathname)
+      !/^\/(?:history|diary)\/[1-9]\d*\/$/.test(url.pathname)
     ) {
       return null;
     }

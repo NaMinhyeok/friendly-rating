@@ -6,7 +6,13 @@ from django.db import IntegrityError, transaction
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
-from ..models import DiaryEntry, MediaAttachment, ScoreChange, ScoreChangeComment
+from ..models import (
+    DiaryEntry,
+    DiaryEntryComment,
+    MediaAttachment,
+    ScoreChange,
+    ScoreChangeComment,
+)
 
 pytestmark = pytest.mark.django_db
 
@@ -101,6 +107,65 @@ def test_diary_entry_protects_its_author(participant_pair):
 
     with pytest.raises(ProtectedError):
         participant_pair.first.delete()
+
+
+@pytest.mark.parametrize("content", ("", " \t "), ids=("empty", "whitespace"))
+def test_diary_entry_comment_content_cannot_be_blank(participant_pair, content):
+    entry = DiaryEntry.objects.create(
+        author=participant_pair.first,
+        content="댓글을 남길 글",
+    )
+
+    with pytest.raises(IntegrityError), transaction.atomic():
+        DiaryEntryComment.objects.create(
+            diary_entry=entry,
+            author=participant_pair.second,
+            content=content,
+        )
+
+
+def test_diary_entry_comments_are_ordered_by_creation_time_then_pk(participant_pair):
+    entry = DiaryEntry.objects.create(
+        author=participant_pair.first,
+        content="대화가 쌓일 글",
+    )
+    comments = [
+        DiaryEntryComment.objects.create(
+            diary_entry=entry,
+            author=author,
+            content=content,
+        )
+        for author, content in (
+            (participant_pair.first, "나중 댓글"),
+            (participant_pair.second, "먼저 댓글"),
+        )
+    ]
+    now = timezone.now()
+    DiaryEntryComment.objects.filter(pk=comments[0].pk).update(created_at=now)
+    DiaryEntryComment.objects.filter(pk=comments[1].pk).update(
+        created_at=now - timedelta(minutes=1)
+    )
+
+    assert list(DiaryEntryComment.objects.filter(diary_entry=entry)) == [
+        comments[1],
+        comments[0],
+    ]
+
+
+def test_deleting_diary_entry_cascades_to_its_comments(participant_pair):
+    entry = DiaryEntry.objects.create(
+        author=participant_pair.first,
+        content="삭제할 글",
+    )
+    comment = DiaryEntryComment.objects.create(
+        diary_entry=entry,
+        author=participant_pair.second,
+        content="함께 삭제될 댓글",
+    )
+
+    entry.delete()
+
+    assert not DiaryEntryComment.objects.filter(pk=comment.pk).exists()
 
 
 def test_attached_diary_media_requires_only_its_diary_parent(participant_pair):

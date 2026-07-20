@@ -107,13 +107,17 @@ test("foreground push rejects external links and arbitrary private body text", (
   assert.equal(notificationSource.includes("innerHTML"), false);
 });
 
-test("foreground thread link validation accepts only the local canonical path", () => {
+test("foreground conversation link validation accepts only local canonical paths", () => {
   const harness = createHarness();
   const { readThreadLink } = harness.sandbox.notificationTestApi;
 
   assert.equal(readThreadLink("/history/9/"), "/history/9/");
   assert.equal(readThreadLink("/history/9/?from=push"), "/history/9/?from=push");
+  assert.equal(readThreadLink("/diary/9/"), "/diary/9/");
+  assert.equal(readThreadLink("/diary/9/?from=push"), "/diary/9/?from=push");
   assert.equal(readThreadLink("/history/0/"), null);
+  assert.equal(readThreadLink("/diary/0/"), null);
   assert.equal(readThreadLink("/history/9/extra/"), null);
+  assert.equal(readThreadLink("/diary/9/extra/"), null);
   assert.equal(readThreadLink("https://evil.test/history/9/"), null);
 });

@@ -42,7 +42,7 @@ function initializeDiary(root) {
   let renderedResultCount = 0;
   let shouldFocusAfterMutation = false;
 
-  const loadPage = () =>
+  const loadPage = ({ protectActiveItems = false } = {}) =>
     loadDiaryPage(root, pageNumber, {
       csrfToken: getCsrfToken(createForm),
       consumeFocusAfterMutation: () => {
@@ -65,6 +65,7 @@ function initializeDiary(root) {
       onResultCount(count) {
         renderedResultCount = count;
       },
+      protectActiveItems,
       uploadsUrl: root.dataset.mediaUploadsUrl || "",
     });
 
@@ -203,6 +204,14 @@ function initializeDiary(root) {
       contentInput?.focus();
     },
   );
+  document.addEventListener?.("woorisai:push-message", (event) => {
+    if (
+      isLocalDiaryThreadLink(event?.detail?.threadLink) &&
+      !hasActiveDiaryItem(root)
+    ) {
+      loadPage({ protectActiveItems: true }).catch(() => undefined);
+    }
+  });
 
   loadPage().catch(() => undefined);
 }
@@ -236,6 +245,11 @@ async function loadDiaryPage(root, pageNumber, callbacks) {
     const payload = await requestJson(url, { cache: "no-store" });
     const page = readDiaryPage(payload);
     if (root.dataset.loadSequence !== String(loadSequence)) {
+      return;
+    }
+    if (callbacks.protectActiveItems && hasActiveDiaryItem(root)) {
+      status.hidden = true;
+      status.replaceChildren();
       return;
     }
     callbacks.onResultCount(page.results.length);
@@ -1173,6 +1187,9 @@ function readDiaryEntry(entry) {
     !isTimestamp(entry.createdAt) ||
     (entry.updatedAt !== null && !isTimestamp(entry.updatedAt)) ||
     typeof entry.isMine !== "boolean" ||
+    !Number.isInteger(entry.commentCount) ||
+    entry.commentCount < 0 ||
+    !isDiaryThreadUrl(entry.threadUrl, entry.id) ||
     !validateAttachmentList(entry.attachments)
   ) {
     throw new Error("우리 일기 항목 형식이 올바르지 않습니다.");
@@ -1229,6 +1246,51 @@ function isSameOriginContentUrl(value) {
   } catch {
     return false;
   }
+}
+
+function isDiaryThreadUrl(value, entryId) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  try {
+    const url = new URL(value, window.location.origin);
+    return (
+      url.origin === window.location.origin &&
+      url.pathname === `/diary/${entryId}/` &&
+      url.search === "" &&
+      url.hash === "" &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isLocalDiaryThreadLink(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+  try {
+    const url = new URL(value, window.location.origin);
+    return (
+      url.origin === window.location.origin &&
+      /^\/diary\/[1-9]\d*\/$/.test(url.pathname) &&
+      url.search === "" &&
+      url.hash === "" &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasActiveDiaryItem(root) {
+  const list = root.querySelector("[data-diary-list]");
+  return Array.from(list?.children || []).some(
+    (item) => item.hasActiveDiaryItemState?.() === true,
+  );
 }
 
 function attachmentItems(entry) {
@@ -1288,6 +1350,7 @@ function renderDiaryPage({
 
 function createDiaryItem(initialEntry, callbacks) {
   let entry = initialEntry;
+  let isEditing = false;
   let isMutating = false;
   let deletionRequiresRefresh = false;
   let itemWasDisposed = false;
@@ -1306,9 +1369,12 @@ function createDiaryItem(initialEntry, callbacks) {
       releaseEditMedia();
     }
   };
+  item.hasActiveDiaryItemState = () => isEditing || isMutating;
 
   const renderCard = ({ focusEdit = false } = {}) => {
+    isEditing = false;
     card.className = `surface diary-card${entry.isMine ? " diary-card--mine" : ""}`;
+    card.id = `diary-entry-${entry.id}`;
     card.setAttribute("aria-busy", "false");
     const header = document.createElement("header");
     header.className = "diary-card__header";
@@ -1425,14 +1491,19 @@ function createDiaryItem(initialEntry, callbacks) {
     if (attachments) {
       children.push(attachments);
     }
+    const footer = document.createElement("footer");
     if (entry.updatedAt !== null) {
-      const footer = document.createElement("footer");
       const editedAt = document.createElement("time");
       editedAt.dateTime = entry.updatedAt;
       editedAt.textContent = `${formatTimestamp(entry.updatedAt)} 수정`;
       footer.append(editedAt);
-      children.push(footer);
     }
+    const threadLink = document.createElement("a");
+    threadLink.className = "diary-card__thread-link";
+    threadLink.href = entry.threadUrl;
+    threadLink.textContent = `댓글 ${entry.commentCount}개 · 이야기 나누기`;
+    footer.append(threadLink);
+    children.push(footer);
     card.replaceChildren(...children);
     if (focusEdit) {
       editButton?.focus();
@@ -1440,6 +1511,7 @@ function createDiaryItem(initialEntry, callbacks) {
   };
 
   const renderDeletedCard = () => {
+    isEditing = false;
     card.className = "surface diary-card";
     card.setAttribute("aria-busy", "false");
     card.setAttribute("tabindex", "-1");
@@ -1452,6 +1524,7 @@ function createDiaryItem(initialEntry, callbacks) {
   };
 
   const renderDeletionUncertainCard = () => {
+    isEditing = false;
     card.className = "surface diary-card";
     card.setAttribute("aria-busy", "true");
     card.setAttribute("tabindex", "-1");
@@ -1465,6 +1538,7 @@ function createDiaryItem(initialEntry, callbacks) {
   };
 
   const renderEditor = () => {
+    isEditing = true;
     const form = document.createElement("form");
     form.className = "diary-edit-form";
     form.setAttribute("aria-busy", "false");

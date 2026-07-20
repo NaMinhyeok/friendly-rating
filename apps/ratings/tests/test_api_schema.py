@@ -114,6 +114,7 @@ def test_openapi_schema_is_public_standard_oas_31_document(client):
     assert set(document["paths"]) == {
         "/api/v1/diary-entries/",
         "/api/v1/diary-entries/{diary_entry_id}/",
+        "/api/v1/diary-entries/{diary_entry_id}/comments/",
         "/api/v1/media-uploads/",
         "/api/v1/media-uploads/{upload_id}/complete/",
         "/api/v1/media-uploads/{upload_id}/discard/",
@@ -569,6 +570,82 @@ def test_score_change_history_operation_declares_page_number_list_contract(clien
     assert _enum_values(document, not_found_error["properties"]["errorCode"]) == [
         "NOT_FOUND"
     ]
+
+
+def test_diary_entry_comment_operation_declares_strict_csrf_contract(client):
+    document = client.get(
+        reverse("api-schema"),
+        HTTP_ACCEPT="application/json",
+    ).json()
+    operation = document["paths"]["/api/v1/diary-entries/{diary_entry_id}/comments/"][
+        "post"
+    ]
+
+    assert operation["security"] == [{"cookieAuth": []}]
+    parameters = {parameter["name"]: parameter for parameter in operation["parameters"]}
+    assert set(parameters) == {"X-CSRFToken", "diary_entry_id"}
+    assert parameters["X-CSRFToken"]["in"] == "header"
+    assert parameters["X-CSRFToken"]["required"] is True
+    assert parameters["diary_entry_id"] == {
+        "in": "path",
+        "name": "diary_entry_id",
+        "schema": {"type": "integer"},
+        "required": True,
+    }
+
+    request_body = operation["requestBody"]
+    assert request_body["required"] is True
+    assert set(request_body["content"]) == {"application/json"}
+    request_schema = _resolve_schema(
+        document,
+        request_body["content"]["application/json"]["schema"],
+    )
+    assert request_schema == {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "content": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 500,
+            },
+        },
+        "required": ["content"],
+    }
+
+    response_components = {
+        "201": "DiaryEntryCommentSuccessEnvelope",
+        "400": "BadRequestErrorEnvelope",
+        "403": "ForbiddenErrorEnvelope",
+        "404": "NotFoundErrorEnvelope",
+        "406": "NotAcceptableErrorEnvelope",
+        "413": "RequestBodyTooLargeErrorEnvelope",
+        "415": "UnsupportedMediaTypeErrorEnvelope",
+        "500": "InternalServerErrorEnvelope",
+    }
+    assert set(operation["responses"]) == set(response_components)
+    for status_code, component_name in response_components.items():
+        assert operation["responses"][status_code]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": f"#/components/schemas/{component_name}"}
+
+    schemas = document["components"]["schemas"]
+    envelope = schemas["DiaryEntryCommentSuccessEnvelope"]
+    assert set(envelope["required"]) == {"resultType", "error", "success"}
+    assert envelope["properties"]["success"] == {
+        "$ref": "#/components/schemas/DiaryEntryCommentData"
+    }
+    comment = schemas["DiaryEntryCommentData"]
+    assert set(comment["required"]) == {
+        "id",
+        "author",
+        "content",
+        "createdAt",
+        "isMine",
+    }
+    assert comment["properties"]["content"]["maxLength"] == 500
+    assert comment["properties"]["createdAt"]["format"] == "date-time"
+    assert comment["properties"]["isMine"]["type"] == "boolean"
 
 
 def test_score_change_thread_detail_declares_private_nested_comment_contract(client):

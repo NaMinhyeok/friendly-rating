@@ -4,7 +4,7 @@ import pytest
 from django.core.exceptions import ValidationError
 from django.utils import timezone
 
-from ..models import DiaryEntry, MediaAttachment, ScoreChange
+from ..models import DiaryEntry, DiaryEntryComment, MediaAttachment, ScoreChange
 from ..services import (
     DiaryEntryNotFoundError,
     DiaryEntryPermissionError,
@@ -358,6 +358,11 @@ def test_delete_retires_attached_media_before_removing_entry(
         content="첨부와 함께 삭제할 기록",
         media_upload_ids=(attachment.pk,),
     )
+    comment = DiaryEntryComment.objects.create(
+        diary_entry=entry,
+        author=participant_pair.second,
+        content="글과 함께 삭제될 댓글",
+    )
     entry_id = entry.pk
 
     with django_capture_on_commit_callbacks(execute=False) as callbacks:
@@ -365,6 +370,7 @@ def test_delete_retires_attached_media_before_removing_entry(
 
     assert len(callbacks) == 1
     assert not DiaryEntry.objects.filter(pk=entry_id).exists()
+    assert not DiaryEntryComment.objects.filter(pk=comment.pk).exists()
     attachment.refresh_from_db()
     assert attachment.diary_entry_id is None
     assert attachment.status == MediaAttachment.Status.DELETING
