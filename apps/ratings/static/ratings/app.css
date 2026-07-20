@@ -1623,6 +1623,23 @@ textarea:focus {
   font-size: 0.68rem;
 }
 
+.diary-card__thread-link {
+  margin-left: auto;
+  color: var(--coral-dark);
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.diary-card__thread-link:hover,
+.diary-card__thread-link:focus-visible {
+  text-decoration: underline;
+}
+
+.diary-thread-origin {
+  border-color: rgba(232, 103, 88, 0.24);
+  background: linear-gradient(145deg, rgba(255, 255, 255, 0.96), rgba(255, 244, 239, 0.95));
+}
+
 .diary-card--editing {
   border-color: rgba(232, 103, 88, 0.34);
   box-shadow: var(--shadow);

@@ -47,8 +47,8 @@ def test_service_worker_is_available_at_its_public_root_path(client):
     assert response.status_code == 200
     assert response.headers["Content-Type"] == "application/javascript"
     assert response.headers["Service-Worker-Allowed"] == "/"
-    assert "static-v10" in body
-    assert "static-v8" not in body
+    assert "static-v11" in body
+    assert "static-v10" not in body
     assert "push-handoff-v1" in body
 
 
@@ -141,7 +141,7 @@ def test_notification_client_sends_the_rendered_csrf_token():
     assert "syncFid(root.dataset.unregisterUrl, fid, true)" not in source
 
 
-def test_foreground_notification_links_only_to_a_same_origin_score_thread():
+def test_foreground_notification_links_only_to_a_same_origin_conversation():
     script_path = finders.find("ratings/notifications.js")
     assert script_path is not None
 
@@ -149,7 +149,7 @@ def test_foreground_notification_links_only_to_a_same_origin_score_thread():
 
     assert "payload?.fcmOptions?.link" in source
     assert "url.origin !== window.location.origin" in source
-    assert r"!/^\/history\/[1-9]\d*\/$/.test(url.pathname)" in source
+    assert r"!/^\/(?:history|diary)\/[1-9]\d*\/$/.test(url.pathname)" in source
     assert "globalThis.woorisaiShowToast" in source
     assert "href: threadLink" in source
     assert "duration: 10000" in source

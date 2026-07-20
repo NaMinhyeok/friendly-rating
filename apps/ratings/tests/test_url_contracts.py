@@ -26,6 +26,16 @@ def test_diary_url_name_and_path_are_stable():
     assert resolve("/diary/").url_name == "diary"
 
 
+def test_diary_entry_thread_url_name_and_path_are_stable():
+    public_path = reverse(
+        "diary-entry-thread",
+        kwargs={"diary_entry_id": 42},
+    )
+
+    assert public_path == "/diary/42/"
+    assert resolve(public_path).url_name == "diary-entry-thread"
+
+
 @pytest.mark.parametrize(
     "retired_path",
     (

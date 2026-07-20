@@ -8,8 +8,16 @@ from django.utils import timezone
 
 
 @pytest.mark.django_db(transaction=True)
-def test_diary_media_migration_preserves_existing_entries_and_media():
+def test_diary_media_migration_preserves_existing_entries_and_media(
+    request: pytest.FixtureRequest,
+):
     executor = MigrationExecutor(connection)
+    current_target = executor.loader.graph.leaf_nodes("ratings")
+
+    def restore_current_migration_state() -> None:
+        MigrationExecutor(connection).migrate(current_target)
+
+    request.addfinalizer(restore_current_migration_state)
     old_target = [("ratings", "0009_diaryentry")]
     new_target = [("ratings", "0010_diary_entry_media_attachments")]
     executor.migrate(old_target)

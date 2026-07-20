@@ -60,6 +60,40 @@ class DiaryEntry(models.Model):
         return f"{self.author} · {self.created_at}"
 
 
+class DiaryEntryComment(models.Model):
+    diary_entry = models.ForeignKey(
+        DiaryEntry,
+        on_delete=models.CASCADE,
+        related_name="comments",
+    )
+    author = models.ForeignKey(
+        Participant,
+        on_delete=models.PROTECT,
+        related_name="diary_entry_comments",
+    )
+    content = models.CharField(max_length=500)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "diary_entry_comment"
+        ordering = ("created_at", "pk")
+        constraints = [
+            models.CheckConstraint(
+                condition=~Q(content__regex=r"^\s*$"),
+                name="diary_comment_content_not_blank",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=("diary_entry", "created_at", "id"),
+                name="diary_comment_thread_order_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.author}: {self.content[:30]}"
+
+
 class RelationshipScore(models.Model):
     source_participant = models.OneToOneField(
         Participant,

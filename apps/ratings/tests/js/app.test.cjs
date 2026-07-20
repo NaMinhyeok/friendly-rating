@@ -109,7 +109,7 @@ function createHarness({
 
   vm.runInNewContext(
     `${appSource}\n` +
-      "globalThis.appTestApi = { readPushThreadPath, signalPushNavigationReady };",
+      "globalThis.appTestApi = { readPushConversationPath, signalPushNavigationReady };",
     sandbox,
     { filename: appScriptPath },
   );
@@ -236,6 +236,18 @@ test("service worker handoff replaces the current page with the score thread", (
   assert.deepEqual(harness.replacedUrls, ["/history/31/?from=push"]);
 });
 
+test("service worker handoff replaces the current page with the diary conversation", () => {
+  const harness = createHarness({ pathname: "/diary/", search: "" });
+
+  harness.dispatchServiceWorkerMessage({
+    id: "push-navigation-diary-31",
+    type: OPEN_MESSAGE,
+    path: "/diary/31/?from=push",
+  });
+
+  assert.deepEqual(harness.replacedUrls, ["/diary/31/?from=push"]);
+});
+
 test("duplicate handoff messages replace the current page only once", () => {
   const harness = createHarness();
   const message = {
@@ -321,7 +333,7 @@ test("login keeps the pending route when its next URL cannot be persisted", asyn
   assert.deepEqual(harness.workerMessages, []);
 });
 
-test("handoff rejects external and malformed score thread paths", () => {
+test("handoff rejects external and malformed conversation paths", () => {
   const harness = createHarness();
 
   for (const pathValue of [
@@ -329,6 +341,8 @@ test("handoff rejects external and malformed score thread paths", () => {
     "//evil.test/history/31/",
     "/history/0/",
     "/history/31/extra/",
+    "/diary/0/",
+    "/diary/31/extra/",
     "http://[",
     null,
     31,

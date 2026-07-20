@@ -8,6 +8,7 @@ from firebase_admin import messaging
 
 from ..models import PushDevice
 from ..notifications import (
+    send_diary_comment_notification,
     send_score_change_notification,
     send_score_comment_notification,
 )
@@ -108,6 +109,43 @@ def test_sends_private_comment_notification_to_the_thread(
     assert message.notification.title == "우리 사이"
     assert message.notification.body == "새로운 댓글이 도착했어요"
     assert message.webpush.fcm_options.link == (f"{TEST_PUBLIC_BASE_URL}history/43/")
+
+
+@pytest.mark.django_db
+def test_sends_private_diary_comment_notification_to_the_entry(
+    participant_pair,
+    push_delivery_settings,
+):
+    PushDevice.objects.create(
+        participant=participant_pair.second,
+        firebase_installation_id=VALID_FID,
+    )
+    send_result = SimpleNamespace(
+        success_count=1,
+        responses=[SimpleNamespace(success=True, exception=None)],
+    )
+
+    with (
+        patch(
+            "apps.ratings.notifications._get_firebase_app",
+            return_value=object(),
+        ),
+        patch(
+            "apps.ratings.notifications.messaging.send_each_for_multicast",
+            return_value=send_result,
+        ) as send_each_for_multicast,
+    ):
+        sent_count = send_diary_comment_notification(
+            recipient_id=participant_pair.second.pk,
+            diary_entry_id=44,
+        )
+
+    assert sent_count == 1
+    message = send_each_for_multicast.call_args.args[0]
+    assert message.fids == [VALID_FID]
+    assert message.notification.title == "우리 사이"
+    assert message.notification.body == "새로운 댓글이 도착했어요"
+    assert message.webpush.fcm_options.link == (f"{TEST_PUBLIC_BASE_URL}diary/44/")
 
 
 @pytest.mark.django_db

@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "woorisai-";
-const STATIC_CACHE = `${CACHE_PREFIX}static-v10`;
+const STATIC_CACHE = `${CACHE_PREFIX}static-v11`;
 const PUSH_HANDOFF_CACHE = `${CACHE_PREFIX}push-handoff-v1`;
 const PUSH_HANDOFF_KEY = "/__woorisai/pending-push-navigation";
 const PUSH_HANDOFF_TTL_MS = 5 * 60 * 1000;
@@ -178,7 +178,7 @@ function normalizePendingPushNavigation(value) {
     return null;
   }
 
-  const path = readScoreThreadUrl(value.path);
+  const path = readConversationUrl(value.path);
   return path
     ? {
         createdAt: value.createdAt,
@@ -258,7 +258,8 @@ async function readPendingPushNavigationForClient(client) {
 
     const clientPath = readClientPath(client.url);
     const isDestination = clientPath === record.path;
-    const isLoginContinuation = readLoginNextThreadUrl(client.url) === record.path;
+    const isLoginContinuation =
+      readLoginNextConversationUrl(client.url) === record.path;
     const isTarget = record.targetClientId === client.id;
     let isOrphanedTarget = false;
     if (
@@ -318,7 +319,7 @@ async function consumePendingPushNavigation(recordId, client) {
   });
 }
 
-function readScoreThreadUrl(value) {
+function readConversationUrl(value) {
   if (typeof value !== "string") {
     return null;
   }
@@ -327,7 +328,7 @@ function readScoreThreadUrl(value) {
     const url = new URL(value, self.location.origin);
     if (
       url.origin !== self.location.origin ||
-      !/^\/history\/[1-9]\d*\/$/.test(url.pathname)
+      !/^\/(?:history|diary)\/[1-9]\d*\/$/.test(url.pathname)
     ) {
       return null;
     }
@@ -349,13 +350,13 @@ function readClientPath(value) {
   }
 }
 
-function readLoginNextThreadUrl(value) {
+function readLoginNextConversationUrl(value) {
   try {
     const url = new URL(value, self.location.origin);
     if (url.origin !== self.location.origin || url.pathname !== "/login/") {
       return null;
     }
-    return readScoreThreadUrl(url.searchParams.get("next"));
+    return readConversationUrl(url.searchParams.get("next"));
   } catch {
     return null;
   }
@@ -365,7 +366,7 @@ function isAppClient(value) {
   const clientPath = readClientPath(value);
   return (
     clientPath !== null &&
-    /^(?:\/|\/login\/|\/history\/|\/history\/[1-9]\d*\/)(?:\?.*)?$/.test(
+    /^(?:\/|\/login\/|\/(?:history|diary)\/(?:[1-9]\d*\/)?)(?:\?.*)?$/.test(
       clientPath,
     )
   );
@@ -428,8 +429,8 @@ async function deliverPendingPushNavigation(client) {
   }
 }
 
-async function openScoreThread(
-  threadUrl,
+async function openConversation(
+  conversationUrl,
   excludedClientIds,
   retryClients,
 ) {
@@ -437,30 +438,30 @@ async function openScoreThread(
     type: "window",
     includeUncontrolled: true,
   });
-  const threadClient = windowClients.find(
-    (client) => readClientPath(client.url) === threadUrl,
+  const conversationClient = windowClients.find(
+    (client) => readClientPath(client.url) === conversationUrl,
   );
-  if (threadClient) {
+  if (conversationClient) {
     try {
-      return await threadClient.focus();
+      return await conversationClient.focus();
     } catch (error) {
-      excludedClientIds.add(threadClient.id);
-      console.warn("열린 점수 대화를 활성화하지 못했어요.", error);
+      excludedClientIds.add(conversationClient.id);
+      console.warn("열린 대화를 활성화하지 못했어요.", error);
     }
   }
 
   const appClient = windowClients.find(
-    (client) => client !== threadClient && isAppClient(client.url),
+    (client) => client !== conversationClient && isAppClient(client.url),
   );
   if (appClient && typeof appClient.navigate === "function") {
     try {
-      const navigatedClient = await appClient.navigate(threadUrl);
+      const navigatedClient = await appClient.navigate(conversationUrl);
       if (navigatedClient) {
         try {
           return await navigatedClient.focus();
         } catch (error) {
           excludedClientIds.add(navigatedClient.id);
-          console.warn("이동한 점수 대화를 활성화하지 못했어요.", error);
+          console.warn("이동한 대화를 활성화하지 못했어요.", error);
         }
       } else {
         retryClients.push(appClient);
@@ -468,11 +469,11 @@ async function openScoreThread(
     } catch (error) {
       excludedClientIds.add(appClient.id);
       retryClients.push(appClient);
-      console.warn("열린 앱을 점수 대화로 이동하지 못했어요.", error);
+      console.warn("열린 앱을 대화로 이동하지 못했어요.", error);
     }
   }
 
-  return self.clients.openWindow(threadUrl);
+  return self.clients.openWindow(conversationUrl);
 }
 
 self.addEventListener("message", (event) => {
@@ -495,7 +496,7 @@ self.addEventListener("message", (event) => {
 });
 
 // Firebase's listener focuses an existing same-host window without navigating it.
-// Register first so notification clicks always open the intended score thread.
+// Register first so notification clicks always open the intended conversation.
 self.addEventListener("notificationclick", (event) => {
   const firebaseMessage = event.notification?.data?.FCM_MSG;
   if (event.action || !firebaseMessage || typeof firebaseMessage !== "object") {
@@ -504,14 +505,16 @@ self.addEventListener("notificationclick", (event) => {
 
   event.stopImmediatePropagation();
   event.notification.close();
-  const threadUrl = readScoreThreadUrl(firebaseMessage.fcmOptions?.link);
-  if (!threadUrl) {
+  const conversationUrl = readConversationUrl(firebaseMessage.fcmOptions?.link);
+  if (!conversationUrl) {
     return;
   }
 
   event.waitUntil(
     (async () => {
-      const pendingNavigationPromise = savePendingPushNavigation(threadUrl).catch(
+      const pendingNavigationPromise = savePendingPushNavigation(
+        conversationUrl,
+      ).catch(
         (error) => {
           console.warn("푸시 이동을 보관하지 못했어요.", error);
           return null;
@@ -519,12 +522,12 @@ self.addEventListener("notificationclick", (event) => {
       );
       const excludedClientIds = new Set();
       const retryClients = [];
-      const clientPromise = openScoreThread(
-        threadUrl,
+      const clientPromise = openConversation(
+        conversationUrl,
         excludedClientIds,
         retryClients,
       ).catch((error) => {
-        console.warn("점수 대화를 열지 못했어요.", error);
+        console.warn("대화를 열지 못했어요.", error);
         return null;
       });
       const [pendingNavigation, openedClient] = await Promise.all([
@@ -535,7 +538,7 @@ self.addEventListener("notificationclick", (event) => {
       if (!pendingNavigation && openedClient) {
         try {
           openedClient.postMessage({
-            path: threadUrl,
+            path: conversationUrl,
             type: PUSH_NAVIGATION_OPEN,
           });
         } catch (error) {

@@ -17,6 +17,7 @@ from django.utils import timezone
 
 from ..models import (
     DiaryEntry,
+    DiaryEntryComment,
     MediaAttachment,
     Participant,
     PushDevice,
@@ -166,6 +167,15 @@ class ProvisionParticipantsCommandTests(TestCase):
                     "updated_at",
                 )
             ),
+            "diary_entry_comments": list(
+                DiaryEntryComment.objects.order_by("pk").values(
+                    "pk",
+                    "diary_entry_id",
+                    "author_id",
+                    "content",
+                    "created_at",
+                )
+            ),
             "media_attachments": list(
                 MediaAttachment.objects.order_by("created_at", "pk").values(
                     "pk",
@@ -224,6 +234,11 @@ class ProvisionParticipantsCommandTests(TestCase):
             author=second,
             content="보존할 댓글",
             media_count=1,
+        )
+        DiaryEntryComment.objects.create(
+            diary_entry=diary_entry,
+            author=second,
+            content="보존할 일기 댓글",
         )
         finalized_at = timezone.now()
         MediaAttachment.objects.create(
@@ -407,6 +422,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         history_snapshot = list(ScoreChange.objects.order_by("pk").values())
         comment_snapshot = list(ScoreChangeComment.objects.order_by("pk").values())
         diary_snapshot = list(DiaryEntry.objects.order_by("pk").values())
+        diary_comment_snapshot = list(DiaryEntryComment.objects.order_by("pk").values())
         media_snapshot = list(MediaAttachment.objects.order_by("pk").values())
         device_snapshot = list(PushDevice.objects.order_by("pk").values())
 
@@ -437,6 +453,10 @@ class ProvisionParticipantsCommandTests(TestCase):
         )
         self.assertEqual(
             list(DiaryEntry.objects.order_by("pk").values()), diary_snapshot
+        )
+        self.assertEqual(
+            list(DiaryEntryComment.objects.order_by("pk").values()),
+            diary_comment_snapshot,
         )
         self.assertEqual(
             list(MediaAttachment.objects.order_by("pk").values()),
@@ -478,6 +498,7 @@ class ProvisionParticipantsCommandTests(TestCase):
         history_snapshot = list(ScoreChange.objects.order_by("pk").values())
         comment_snapshot = list(ScoreChangeComment.objects.order_by("pk").values())
         diary_snapshot = list(DiaryEntry.objects.order_by("pk").values())
+        diary_comment_snapshot = list(DiaryEntryComment.objects.order_by("pk").values())
         device_snapshot = list(PushDevice.objects.order_by("pk").values())
 
         self.run_command("--reconcile")
@@ -497,6 +518,10 @@ class ProvisionParticipantsCommandTests(TestCase):
         )
         self.assertEqual(
             list(DiaryEntry.objects.order_by("pk").values()), diary_snapshot
+        )
+        self.assertEqual(
+            list(DiaryEntryComment.objects.order_by("pk").values()),
+            diary_comment_snapshot,
         )
         self.assertEqual(
             list(PushDevice.objects.order_by("pk").values()), device_snapshot

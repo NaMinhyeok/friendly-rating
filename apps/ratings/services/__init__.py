@@ -6,6 +6,7 @@ from .diary_entries import (
     delete_diary_entry,
     update_diary_entry,
 )
+from .diary_entry_comments import add_diary_entry_comment
 from .media_uploads import (
     CompletedMediaUpload,
     InitiatedMediaUpload,
@@ -46,6 +47,7 @@ __all__ = (
     "MediaUploadStateError",
     "MediaUploadStorageError",
     "MediaUploadValidationError",
+    "add_diary_entry_comment",
     "add_score_change_comment",
     "attach_comment_media_uploads",
     "attach_diary_entry_media_uploads",

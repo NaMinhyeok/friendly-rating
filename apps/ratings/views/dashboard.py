@@ -4,7 +4,7 @@ from django.db.models import Q
 from django.shortcuts import get_object_or_404, render
 from django.views.decorators.http import require_GET
 
-from ..models import ScoreChange
+from ..models import DiaryEntry, ScoreChange
 from ._participants import get_current_participant
 
 
@@ -44,8 +44,20 @@ def diary_view(request):
     response = render(
         request,
         "ratings/diary.html",
-        {"media_uploads_available": settings.MEDIA_UPLOADS_AVAILABLE},
+        get_dashboard_context(),
     )
+    response.headers["Cache-Control"] = "private, no-store"
+    return response
+
+
+@login_required
+@require_GET
+def diary_entry_thread_view(request, diary_entry_id: int):
+    get_current_participant(request)
+    get_object_or_404(DiaryEntry.objects.only("pk"), pk=diary_entry_id)
+    context = get_dashboard_context()
+    context["diary_entry_id"] = diary_entry_id
+    response = render(request, "ratings/diary_entry_thread.html", context)
     response.headers["Cache-Control"] = "private, no-store"
     return response
 

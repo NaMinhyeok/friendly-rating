@@ -127,11 +127,17 @@ def test_diary_entry_api_url_names_and_paths_are_stable():
         "api-v1:diary-entry-detail",
         kwargs={"diary_entry_id": 42},
     )
+    comments_path = reverse(
+        "api-v1:diary-entry-comment-list",
+        kwargs={"diary_entry_id": 42},
+    )
 
     assert list_path == "/api/v1/diary-entries/"
     assert detail_path == "/api/v1/diary-entries/42/"
+    assert comments_path == "/api/v1/diary-entries/42/comments/"
     assert resolve(list_path).url_name == "diary-entry-list"
     assert resolve(detail_path).url_name == "diary-entry-detail"
+    assert resolve(comments_path).url_name == "diary-entry-comment-list"
 
 
 def test_participant_posts_diary_from_session_with_normalized_content(
@@ -161,6 +167,11 @@ def test_participant_posts_diary_from_session_with_normalized_content(
             "updatedAt": None,
             "isMine": True,
             "attachments": [],
+            "commentCount": 0,
+            "threadUrl": reverse(
+                "diary-entry-thread",
+                kwargs={"diary_entry_id": entry.pk},
+            ),
         },
     }
     assert entry.author == participant_pair.first
@@ -272,6 +283,17 @@ def test_both_participants_read_the_shared_diary_with_relative_ownership(
     assert [item["isMine"] for item in second_results] == [True, False]
     assert [item["attachments"] for item in first_results] == [[], []]
     assert [item["attachments"] for item in second_results] == [[], []]
+    assert [item["commentCount"] for item in first_results] == [0, 0]
+    assert [item["threadUrl"] for item in first_results] == [
+        reverse(
+            "diary-entry-thread",
+            kwargs={"diary_entry_id": second_entry.pk},
+        ),
+        reverse(
+            "diary-entry-thread",
+            kwargs={"diary_entry_id": first_entry.pk},
+        ),
+    ]
     assert first_response.json()["success"]["paging"] == {
         "pageNumber": 1,
         "pageSize": 20,
@@ -368,6 +390,8 @@ def test_both_participants_can_read_one_shared_diary_entry(participant_pair):
     assert response.json()["success"]["id"] == entry.pk
     assert response.json()["success"]["isMine"] is False
     assert response.json()["success"]["attachments"] == []
+    assert response.json()["success"]["commentCount"] == 0
+    assert response.json()["success"]["comments"] == []
 
 
 def test_other_participant_reads_a_shared_diary_attachment(participant_pair):
@@ -968,6 +992,8 @@ def test_diary_openapi_declares_shared_read_and_author_mutation_contract(client)
         "updatedAt",
         "isMine",
         "attachments",
+        "commentCount",
+        "threadUrl",
     }
     assert entry_schema["properties"]["content"]["maxLength"] == 1000
     assert set(entry_schema["properties"]["updatedAt"]["type"]) == {
@@ -978,5 +1004,23 @@ def test_diary_openapi_declares_shared_read_and_author_mutation_contract(client)
     assert entry_schema["properties"]["attachments"] == {
         "type": "array",
         "items": {"$ref": "#/components/schemas/MediaAttachmentData"},
+        "readOnly": True,
+    }
+    assert entry_schema["properties"]["commentCount"]["minimum"] == 0
+    assert entry_schema["properties"]["threadUrl"]["type"] == "string"
+
+    detail_success_schema = _resolve_schema(
+        document,
+        detail_operations["get"]["responses"]["200"]["content"]["application/json"][
+            "schema"
+        ],
+    )
+    assert detail_success_schema["properties"]["success"] == {
+        "$ref": "#/components/schemas/DiaryEntryThreadData"
+    }
+    thread_schema = document["components"]["schemas"]["DiaryEntryThreadData"]
+    assert thread_schema["properties"]["comments"] == {
+        "type": "array",
+        "items": {"$ref": "#/components/schemas/DiaryEntryCommentData"},
         "readOnly": True,
     }

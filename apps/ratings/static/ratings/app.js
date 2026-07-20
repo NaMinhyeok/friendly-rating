@@ -6,7 +6,7 @@ const PUSH_NAVIGATION_CONSUMED = "woorisai:push-navigation-consumed";
 const PUSH_NAVIGATION_READY_RETRY_DELAYS_MS = [1_000, 31_000];
 let navigatingPushNavigationId = null;
 
-function readPushThreadPath(value) {
+function readPushConversationPath(value) {
   if (typeof value !== "string") {
     return null;
   }
@@ -15,7 +15,7 @@ function readPushThreadPath(value) {
     const url = new URL(value, window.location.origin);
     if (
       url.origin !== window.location.origin ||
-      !/^\/history\/[1-9]\d*\/$/.test(url.pathname)
+      !/^\/(?:history|diary)\/[1-9]\d*\/$/.test(url.pathname)
     ) {
       return null;
     }
@@ -106,7 +106,7 @@ function handlePushNavigationMessage(event) {
     return;
   }
 
-  const path = readPushThreadPath(event.data.path);
+  const path = readPushConversationPath(event.data.path);
   if (!path) {
     return;
   }

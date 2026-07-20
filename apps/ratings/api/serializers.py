@@ -16,6 +16,7 @@ from rest_framework.settings import api_settings
 
 from ..models import (
     DiaryEntry,
+    DiaryEntryComment,
     MediaAttachment,
     Participant,
     RelationshipScore,
@@ -47,6 +48,11 @@ class DiaryEntryCreateCommand:
 class DiaryEntryUpdateCommand:
     content: str | None
     media_upload_ids: tuple[UUID, ...] | None
+
+
+@dataclass(frozen=True, slots=True)
+class DiaryEntryCommentCommand:
+    content: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -342,6 +348,43 @@ class DiaryEntryUpdateRequestSerializerExtension(OpenApiSerializerExtension):
         direction: Direction,
     ) -> dict[str, Any]:
         return _diary_entry_update_request_schema()
+
+
+class DiaryEntryCommentRequestSerializer(StrictRequestSerializer):
+    content = StrictCharField(
+        min_length=1,
+        max_length=500,
+        trim_whitespace=True,
+    )
+
+    def to_command(self) -> DiaryEntryCommentCommand:
+        content = self.validated_data.get("content")
+        if not isinstance(content, str):
+            raise RuntimeError("Validated diary comment is not a string.")
+        return DiaryEntryCommentCommand(content=content)
+
+
+class DiaryEntryCommentRequestSerializerExtension(OpenApiSerializerExtension):
+    target_class = DiaryEntryCommentRequestSerializer
+
+    @override
+    def map_serializer(
+        self,
+        auto_schema: "AutoSchema",
+        direction: Direction,
+    ) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "content": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                },
+            },
+            "required": ["content"],
+        }
 
 
 class ScoreChangeRequestSerializer(StrictRequestSerializer):
@@ -835,10 +878,26 @@ class DiaryEntryDataSerializer(serializers.Serializer[DiaryEntry]):
     )
     isMine = serializers.SerializerMethodField()
     attachments = serializers.SerializerMethodField()
+    commentCount = serializers.SerializerMethodField()
+    threadUrl = serializers.SerializerMethodField()
 
     def get_isMine(self, entry: DiaryEntry) -> bool:
         participant_id = self.context.get("participant_id")
         return entry.author_id == participant_id
+
+    @extend_schema_field(serializers.IntegerField(min_value=0))
+    def get_commentCount(self, entry: DiaryEntry) -> int:
+        annotated_count = getattr(entry, "comment_count", None)
+        if isinstance(annotated_count, int) and not isinstance(annotated_count, bool):
+            return annotated_count
+        return DiaryEntryComment.objects.filter(diary_entry=entry).count()
+
+    @extend_schema_field(serializers.CharField())
+    def get_threadUrl(self, entry: DiaryEntry) -> str:
+        return reverse(
+            "diary-entry-thread",
+            kwargs={"diary_entry_id": entry.pk},
+        )
 
     @extend_schema_field(MediaAttachmentDataSerializer(many=True))
     def get_attachments(self, entry: DiaryEntry) -> list[dict[str, Any]]:
@@ -856,6 +915,31 @@ class DiaryEntryDataSerializer(serializers.Serializer[DiaryEntry]):
                 ).order_by("position", "created_at", "id")
             )
         return [dict(MediaAttachmentDataSerializer(item).data) for item in attachments]
+
+
+class DiaryEntryCommentDataSerializer(serializers.Serializer[DiaryEntryComment]):
+    id = serializers.IntegerField(read_only=True, min_value=1)
+    author = ParticipantSummarySerializer(read_only=True)
+    content = serializers.CharField(read_only=True, max_length=500)
+    createdAt = serializers.DateTimeField(source="created_at", read_only=True)
+    isMine = serializers.SerializerMethodField()
+
+    def get_isMine(self, comment: DiaryEntryComment) -> bool:
+        participant_id = self.context.get("participant_id")
+        return comment.author_id == participant_id
+
+
+class DiaryEntryThreadDataSerializer(DiaryEntryDataSerializer):
+    comments = DiaryEntryCommentDataSerializer(many=True, read_only=True)
+
+    @override
+    def to_representation(self, instance: DiaryEntry) -> dict[str, Any]:
+        data = super().to_representation(instance)
+        comments = data.get("comments")
+        if not isinstance(comments, list):
+            raise RuntimeError("Serialized diary comments are not a list.")
+        data["commentCount"] = len(comments)
+        return data
 
 
 class ScoreChangeHistoryDataSerializer(serializers.Serializer[ScoreChange]):
@@ -1340,6 +1424,18 @@ class DiaryEntrySuccessEnvelopeSerializer(serializers.Serializer[object]):
     resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
     error = NullOnlyField()
     success = DiaryEntryDataSerializer()
+
+
+class DiaryEntryCommentSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = DiaryEntryCommentDataSerializer()
+
+
+class DiaryEntryThreadSuccessEnvelopeSerializer(serializers.Serializer[object]):
+    resultType = serializers.ChoiceField(choices=(ResultType.SUCCESS.value,))
+    error = NullOnlyField()
+    success = DiaryEntryThreadDataSerializer()
 
 
 class DiaryEntryPageSuccessEnvelopeSerializer(serializers.Serializer[object]):
