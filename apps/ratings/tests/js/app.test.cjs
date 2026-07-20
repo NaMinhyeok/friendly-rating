@@ -20,6 +20,7 @@ function createHarness({
   historyOutcome = "success",
   loginNextValue = null,
   pathname = "/",
+  reasonValue = null,
   search = "",
 } = {}) {
   const actions = [];
@@ -32,6 +33,17 @@ function createHarness({
   const workerMessages = [];
   const loginNextInput =
     loginNextValue === null ? null : { value: loginNextValue };
+  const characterCurrent = reasonValue === null ? null : { textContent: "" };
+  const reasonInput =
+    reasonValue === null
+      ? null
+      : {
+          listeners: {},
+          value: reasonValue,
+          addEventListener(type, listener) {
+            this.listeners[type] = listener;
+          },
+        };
   const worker = {
     postMessage(message) {
       workerMessages.push(message);
@@ -62,7 +74,16 @@ function createHarness({
       documentListeners.set(type, listeners);
     },
     querySelector(selector) {
-      return selector === 'input[name="next"]' ? loginNextInput : null;
+      if (selector === 'input[name="next"]') {
+        return loginNextInput;
+      }
+      if (selector === "#id_reason") {
+        return reasonInput;
+      }
+      if (selector === "[data-character-current]") {
+        return characterCurrent;
+      }
+      return null;
     },
     querySelectorAll() {
       return [];
@@ -116,11 +137,13 @@ function createHarness({
 
   return {
     actions,
+    characterCurrent,
     document,
     documentListeners,
     loginNextInput,
     replacedHistoryUrls,
     replacedUrls,
+    reasonInput,
     scheduledTimeouts,
     sandbox,
     serviceWorkerListeners,
@@ -148,6 +171,17 @@ function createHarness({
     },
   };
 }
+
+test("score reasons count Unicode code points instead of UTF-16 units", () => {
+  const harness = createHarness({ reasonValue: "🙂".repeat(200) });
+
+  assert.equal(harness.characterCurrent.textContent, "200");
+
+  harness.reasonInput.value += "🙂";
+  harness.reasonInput.listeners.input();
+
+  assert.equal(harness.characterCurrent.textContent, "201");
+});
 
 test("push navigation listener is ready before service worker registration", async () => {
   const harness = createHarness();

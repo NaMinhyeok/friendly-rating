@@ -737,6 +737,28 @@ test("decrease maps the entered amount to a negative delta", () => {
   );
 });
 
+test("score reasons accept up to two hundred Unicode code points", () => {
+  const acceptedReason = "🙂".repeat(200);
+
+  assert.deepEqual(
+    readCommand({ operation: "increase", amount: "1", reason: acceptedReason }),
+    { delta: 1, reason: acceptedReason },
+  );
+
+  const rejected = evaluateCommand({
+    operation: "increase",
+    amount: "1",
+    reason: `${acceptedReason}🙂`,
+  });
+  assert.equal(rejected.command, null);
+  assert.deepEqual(rejected.errors, [
+    {
+      field: "reason",
+      message: "변경 이유는 200자 이하여야 합니다.",
+    },
+  ]);
+});
+
 test("target mode sends the final score without deriving a delta", () => {
   assert.deepEqual(
     readCommand({

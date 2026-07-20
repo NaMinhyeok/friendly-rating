@@ -1063,7 +1063,7 @@ function readScoreChangeCommand(form) {
     isValid = false;
     hasInlineError = true;
   }
-  if (reason.length > 200) {
+  if ([...reason].length > 200) {
     showFieldError(form, "reason", "변경 이유는 200자 이하여야 합니다.");
     isValid = false;
     hasInlineError = true;
@@ -1216,7 +1216,7 @@ function updateCharacterCount(form) {
   const reason = form.querySelector("[name=reason]");
   const count = form.querySelector("[data-character-current]");
   if (reason && count) {
-    count.textContent = String(reason.value.length);
+    count.textContent = String([...reason.value].length);
   }
 }
 

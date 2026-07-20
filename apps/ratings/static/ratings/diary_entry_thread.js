@@ -482,7 +482,7 @@ function renderDiaryEntry(root, entry) {
   const avatar = document.createElement("span");
   avatar.className = "diary-card__avatar";
   avatar.setAttribute("aria-hidden", "true");
-  avatar.textContent = entry.author.displayName.slice(0, 1);
+  avatar.textContent = [...entry.author.displayName][0] || "";
   const heading = document.createElement("div");
   const author = document.createElement("strong");
   author.textContent = entry.isMine

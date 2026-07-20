@@ -152,7 +152,7 @@ const characterCurrent = document.querySelector("[data-character-current]");
 
 if (reasonInput && characterCurrent) {
   const updateCharacterCount = () => {
-    characterCurrent.textContent = reasonInput.value.length;
+    characterCurrent.textContent = String([...reasonInput.value].length);
   };
 
   reasonInput.addEventListener("input", updateCharacterCount);

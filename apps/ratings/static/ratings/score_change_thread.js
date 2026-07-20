@@ -543,9 +543,12 @@ function createUploadItem(file) {
 
 function createUploadPreview(item, { onRemove, removeLabel }) {
   const card = document.createElement("article");
-  card.className = "media-preview-card";
+  const isVideo = item.file.type.startsWith("video/");
+  card.className = `media-preview-card${
+    isVideo ? " media-preview-card--video" : ""
+  }`;
   let visual;
-  if (item.file.type.startsWith("video/")) {
+  if (isVideo) {
     visual = document.createElement("video");
     visual.autoplay = false;
     visual.controls = true;
